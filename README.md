@@ -1,1 +1,1 @@
-Python Packages not availables on pip list
+Python Packages not available on pip list
