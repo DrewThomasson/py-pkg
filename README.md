@@ -1,2 +1,1 @@
 - Python Packages not available on pip list
-- TTS compiled in C++
