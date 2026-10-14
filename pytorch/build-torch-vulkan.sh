@@ -21,6 +21,8 @@ KEEP_IMAGES="${KEEP_IMAGES:-0}"
 NO_BUNDLE="${NO_BUNDLE:-0}"
 CODEC_FFMPEG="${CODEC_FFMPEG:-auto}"
 MACOS_MIN="${MACOS_MIN:-11.0}"
+INSTALL_VK="${INSTALL_VK:-auto}"
+INSTALL_SDK="${INSTALL_SDK:-1}"
 LIST=0
 IN_CONTAINER=""
 log(){ echo "[vk-build] $*"; }
@@ -31,6 +33,8 @@ case "$OS" in
   Darwin) [ -n "$JOBS" ] || JOBS=$(sysctl -n hw.ncpu); MEM_GB=$(( $(sysctl -n hw.memsize) / 1073741824 ));;
   *) die "unsupported system $OS - on Windows use build-torch-vulkan.cmd";;
 esac
+HOST_ARCH="$(uname -m)"
+if [ "$OS" = Linux ] && [ "$HOST_ARCH" = arm64 ]; then HOST_ARCH=aarch64; fi
 usage(){
 cat <<EOF
 Usage: ./build-torch-vulkan.sh [options]
@@ -62,6 +66,14 @@ Options                                                                         
   --no-bundle             do not put the Vulkan loader (macOS: + MoltenVK) into the torch wheel   [NO_BUNDLE=1]
   --macos-min X.Y         oldest macOS the wheels run on                                   [MACOS_MIN] default: $MACOS_MIN
   --keep-images           keep the Docker images this run pulled                           [KEEP_IMAGES=1] default: removed
+  --no-install-sdk        macOS: do not install the LunarG SDK when it is missing          [INSTALL_SDK=0] default: installs it
+                          (latest SDK into ~/VulkanSDK, checksum-verified; brings MoltenVK, the loader and glslc)
+  --install-vulkan        run the Vulkan install job on any host                           [INSTALL_VK=1]
+  --no-install-vulkan     never run it                                                     [INSTALL_VK=0]  default: arm64/aarch64 hosts
+                          macOS: reports whether the GPU has Metal (MoltenVK runs on it)
+                          Linux: detects the GPU and, if it has a Vulkan driver (Jetson, Pi 4/5 V3DV, Mali PanVK,
+                          Adreno Turnip, AMD RADV, NVIDIA, NVK), installs the loader + driver packages, then runs the
+                          op probe on this host with the built wheels; a GPU without one is reported and the probe skipped
   -h, --help
 Output
   <root>/dist/<target>/<pkg>-<ver>+<suffix>-cpXY-cpXY-<platform>.whl (Linux: manylinux_2_28_<arch>)
@@ -73,6 +85,7 @@ Needs
   macOS: Xcode Command Line Tools, git, curl, the LunarG Vulkan SDK (found in ~/VulkanSDK, or VULKAN_SDK=<sdk>/macOS)
     macos-x86_64-vulkan torchcodec: brew install ffmpeg pkg-config
   uv is installed if missing; Python versions come from uv (macOS) or the manylinux image (Linux)
+  Vulkan install job on Linux: apt, dnf or pacman, through sudo when not root
 Examples
   ./build-torch-vulkan.sh --list
   ./build-torch-vulkan.sh
@@ -99,6 +112,9 @@ while [ $# -gt 0 ]; do
     --clean) CLEAN=1;;
     --no-bundle) NO_BUNDLE=1;;
     --keep-images) KEEP_IMAGES=1;;
+    --install-vulkan) INSTALL_VK=1;;
+    --no-install-vulkan) INSTALL_VK=0;;
+    --no-install-sdk) INSTALL_SDK=0;;
     --in-container) need "$@"; IN_CONTAINER="$2"; shift;;
     -h|--help) usage; exit 0;;
     *) die "unknown option: $1 (see --help)";;
@@ -119,6 +135,111 @@ codec_mode(){  # target -> s3 | local | skip
     macos-x86_64-*) if local_ffmpeg; then echo local; else echo skip; fi;;
     *) echo s3;;
   esac
+}
+# ---------------------------------------------------------------- Vulkan install job
+install_on(){
+  case "$INSTALL_VK" in 1) return 0;; 0) return 1;; esac
+  case "$HOST_ARCH" in aarch64|arm64) return 0;; esac
+  return 1
+}
+gpu_check(){  # sets GPU_OK (1/0), GPU_NAME, GPU_NOTE, GPU_MESA (Mesa driver family to install, empty if the driver ships its own)
+  GPU_OK=0; GPU_NAME="none"; GPU_NOTE=""; GPU_MESA=""
+  if [ "$OS" = Darwin ]; then
+    GPU_NAME="$(system_profiler SPDisplaysDataType 2>/dev/null | awk -F': ' '/Chipset Model/{print $2; exit}')"
+    if system_profiler SPDisplaysDataType 2>/dev/null | grep -q 'Metal'; then GPU_OK=1; GPU_NOTE="Metal GPU, Vulkan through MoltenVK"; else GPU_NOTE="no Metal support, MoltenVK cannot run"; fi
+    return 0
+  fi
+  if [ -f /etc/nv_tegra_release ]; then
+    GPU_OK=1; GPU_NAME="NVIDIA Jetson, L4T $(sed -n '1s/^# R\([0-9]*\).*REVISION: \([0-9.]*\).*/\1.\2/p' /etc/nv_tegra_release)"; GPU_NOTE="Vulkan driver ships with JetPack"
+    return 0
+  fi
+  local d drv found=""
+  for d in /sys/class/drm/card[0-9]*; do
+    [ -e "$d/device/driver" ] || continue
+    drv="$(basename "$(readlink -f "$d/device/driver")")"
+    case " $found " in *" $drv "*) ;; *) found="$found $drv";; esac
+  done
+  for drv in $found; do
+    case "$drv" in
+      v3d) GPU_OK=1; GPU_NAME="Broadcom VideoCore VI/VII, v3d"; GPU_MESA=broadcom; GPU_NOTE="Mesa V3DV";;
+      panfrost|panthor) GPU_OK=1; GPU_NAME="Arm Mali, $drv"; GPU_MESA=panfrost; GPU_NOTE="Mesa PanVK, needs a recent Mesa";;
+      msm) GPU_OK=1; GPU_NAME="Qualcomm Adreno, msm"; GPU_MESA=freedreno; GPU_NOTE="Mesa Turnip";;
+      amdgpu) GPU_OK=1; GPU_NAME="AMD, amdgpu"; GPU_MESA=radeon; GPU_NOTE="Mesa RADV";;
+      nouveau) GPU_OK=1; GPU_NAME="NVIDIA, nouveau"; GPU_MESA=nouveau; GPU_NOTE="Mesa NVK, Turing or newer with Mesa 24.1+";;
+      nvidia|nvidia-drm) GPU_OK=1; GPU_NAME="NVIDIA, proprietary driver"; GPU_NOTE="Vulkan ships with the NVIDIA driver";;
+      i915|xe) GPU_OK=1; GPU_NAME="Intel, $drv"; GPU_MESA=intel; GPU_NOTE="Mesa ANV";;
+    esac
+    if [ "$GPU_OK" = 1 ]; then return 0; fi
+  done
+  if [ -n "$found" ]; then GPU_NAME="${found# }"; GPU_NOTE="no Vulkan driver exists for this GPU (vc4, lima, etnaviv, ...)"; else GPU_NOTE="no GPU under /sys/class/drm"; fi
+}
+vk_working(){ command -v vulkaninfo >/dev/null 2>&1 && vulkaninfo --summary 2>/dev/null | grep -i 'deviceName' | grep -qiv 'llvmpipe'; }
+install_vulkan_linux(){
+  if vk_working; then log "Vulkan already works on this host"; return 0; fi
+  local sudo="" mesa=""
+  if [ "$(id -u)" != 0 ]; then sudo="sudo"; fi
+  log "installing the Vulkan loader and driver for: $GPU_NAME"
+  if command -v apt-get >/dev/null 2>&1; then
+    if [ -n "$GPU_MESA" ]; then mesa="mesa-vulkan-drivers"; fi
+    $sudo apt-get update -qq
+    $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libvulkan1 vulkan-tools $mesa
+  elif command -v dnf >/dev/null 2>&1; then
+    if [ -n "$GPU_MESA" ]; then mesa="mesa-vulkan-drivers"; fi
+    $sudo dnf install -y -q vulkan-loader vulkan-tools $mesa
+  elif command -v pacman >/dev/null 2>&1; then
+    if [ -n "$GPU_MESA" ]; then mesa="vulkan-$GPU_MESA"; fi
+    $sudo pacman -S --needed --noconfirm vulkan-icd-loader vulkan-tools $mesa
+  else
+    log "WARNING: no apt, dnf or pacman - install the Vulkan loader, vulkaninfo and your GPU's Vulkan driver by hand"
+    return 0
+  fi
+  if vk_working; then
+    log "Vulkan works: $(vulkaninfo --summary 2>/dev/null | awk -F'= ' '/deviceName/{print $2; exit}')"
+  else
+    log "WARNING: still no Vulkan device after installing - the driver may need a newer Mesa or kernel (see vulkaninfo --summary)"
+  fi
+}
+install_vulkan_macos(){
+  local ver tmp app exe exp got
+  ver="$(curl -fsSL https://vulkan.lunarg.com/sdk/latest/mac.txt)" || die "cannot reach vulkan.lunarg.com"
+  tmp="$(mktemp -d)"
+  log "installing the LunarG Vulkan SDK $ver into $HOME/VulkanSDK/$ver"
+  curl -fL -o "$tmp/vulkan_sdk.zip" "https://sdk.lunarg.com/sdk/download/$ver/mac/vulkan_sdk.zip"
+  exp="$(curl -fsSL "https://sdk.lunarg.com/sdk/sha/$ver/mac/vulkan_sdk.zip.txt" 2>/dev/null | awk '{print $1; exit}' || true)"
+  if [ ${#exp} = 64 ]; then
+    got="$(shasum -a 256 "$tmp/vulkan_sdk.zip" | awk '{print $1}')"
+    [ "$(echo "$exp" | tr 'A-F' 'a-f')" = "$got" ] || die "checksum mismatch for vulkan_sdk.zip"
+  else
+    log "WARNING: no published checksum for vulkan_sdk.zip, skipping verification"
+  fi
+  (cd "$tmp" && unzip -q vulkan_sdk.zip)
+  app="$(find "$tmp" -maxdepth 2 -name '*.app' -type d | head -1)"
+  [ -n "$app" ] || die "no installer app inside vulkan_sdk.zip"
+  exe="$(ls "$app/Contents/MacOS/" | head -1)"
+  "$app/Contents/MacOS/$exe" --root "$HOME/VulkanSDK/$ver" --accept-licenses --default-answer --confirm-command install
+  rm -rf "$tmp"
+  [ -f "$HOME/VulkanSDK/$ver/macOS/include/vulkan/vulkan.h" ] || die "the SDK install did not produce $HOME/VulkanSDK/$ver/macOS"
+}
+host_probe(){  # target: install the built wheels into a host venv and run the op probe on this host's GPU
+  local T="$1" venv w
+  DIST="$ROOT/dist/$T"
+  if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; fi
+  for V in $PYS; do
+    TAG="cp${V/./}"
+    venv="$ROOT/venv-probe-$T-$V"
+    rm -rf "$venv"
+    uv venv -q --seed --python "$V" "$venv"
+    PY="$venv/bin/python"
+    WHL="$(ls "$DIST"/torch-*-"$TAG"-*.whl 2>/dev/null | head -1 || true)"
+    if [ -z "$WHL" ]; then log "no torch $TAG wheel in $DIST to probe"; continue; fi
+    "$PY" -m pip install -q "$WHL"
+    for w in torchaudio torchcodec; do
+      WHL="$(ls "$DIST/$w"-*-"$TAG"-*.whl 2>/dev/null | head -1 || true)"
+      if [ -n "$WHL" ]; then install_whl; fi
+    done
+    log "host probe on $GPU_NAME:"
+    probe
+  done
 }
 # ---------------------------------------------------------------- native build (in a manylinux container, or on a Mac)
 sync_repo(){  # name url version clean
@@ -298,6 +419,9 @@ native_build(){  # target
   export USE_CUDA=0 USE_ROCM=0 USE_XPU=0 USE_CUDNN=0 USE_NCCL=0 ENABLE_CUDA=0
   if [ "$OS" = Darwin ]; then
     VULKAN_SDK="$(macos_sdk)"
+    if [ -z "$VULKAN_SDK" ] || [ ! -f "$VULKAN_SDK/include/vulkan/vulkan.h" ]; then
+      if [ "$INSTALL_SDK" = 1 ]; then install_vulkan_macos; VULKAN_SDK="$(macos_sdk)"; else die "no Vulkan SDK (see --help)"; fi
+    fi
     export VULKAN_SDK MACOSX_DEPLOYMENT_TARGET="$MACOS_MIN"
     export PATH="$VULKAN_SDK/bin:$PATH"
     LOADER="$VULKAN_SDK/lib/libvulkan.1.dylib"
@@ -333,7 +457,7 @@ native_build(){  # target
     else
       WHL="$(ls "$DIST"/torch-"$TORCH"+"$SUFFIX"-"$TAG"-*.whl 2>/dev/null | head -1 || true)"
       [ -n "$WHL" ] || die "torch is not in --pkgs and no torch-$TORCH+$SUFFIX $TAG wheel is in $DIST to build against"
-      install_whl
+      "$PY" -m pip install -q "$WHL"
     fi
     if want torchaudio; then build_torchaudio; fi
     if want torchcodec; then build_torchcodec; fi
@@ -382,7 +506,6 @@ if [ -n "$IN_CONTAINER" ]; then
   exit 0
 fi
 # ---------------------------------------------------------------- host: targets, checks, dispatch
-HOST_ARCH="$(uname -m)"
 if [ "$OS" = Darwin ]; then
   if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then die "this shell runs under Rosetta - use a native arm64 terminal"; fi
   case "$HOST_ARCH" in
@@ -393,7 +516,7 @@ if [ "$OS" = Darwin ]; then
 else
   case "$HOST_ARCH" in
     x86_64) ALL="linux-x86_64-vulkan linux-aarch64-vulkan-qemu";;
-    aarch64|arm64) HOST_ARCH=aarch64; ALL="linux-aarch64-vulkan";;
+    aarch64) ALL="linux-aarch64-vulkan";;
     *) die "unsupported machine: $HOST_ARCH";;
   esac
 fi
@@ -411,7 +534,7 @@ missing(){
       command -v uv >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 || m="$m curl (to install uv),"
       sdk="$(macos_sdk)"
       if [ -z "$sdk" ] || [ ! -f "$sdk/include/vulkan/vulkan.h" ]; then
-        m="$m LunarG Vulkan SDK (or VULKAN_SDK=<sdk>/macOS),"
+        [ "$INSTALL_SDK" = 1 ] || m="$m LunarG Vulkan SDK (or VULKAN_SDK=<sdk>/macOS, or drop --no-install-sdk),"
       else
         [ -x "$sdk/bin/glslc" ] || m="$m glslc in $sdk/bin,"
         [ -f "$sdk/lib/libvulkan.1.dylib" ] || m="$m Vulkan loader in $sdk/lib,"
@@ -423,11 +546,21 @@ missing(){
 }
 note(){
   case "$1" in *-qemu) echo " (only with --only)";; esac
+  case "$1" in macos-*) if [ "$INSTALL_SDK" = 1 ] && [ ! -f "$(macos_sdk)/include/vulkan/vulkan.h" ]; then echo " (installs the Vulkan SDK first)"; fi;; esac
   if want torchcodec && [ "$(codec_mode "$1")" = skip ]; then echo " (torchcodec skipped: no local FFmpeg)"; fi
 }
 if [ "$LIST" = 1 ]; then
   echo "targets on this $HOST machine:"
   for T in $ALL; do r="$(missing "$T")"; printf '  %-28s %s\n' "$T" "${r:-ready$(note "$T" | tr -d '\n')}"; done
+  if install_on; then
+    gpu_check
+    echo "GPU: $GPU_NAME - $GPU_NOTE"
+    if [ "$OS" = Linux ]; then
+      if [ "$GPU_OK" != 1 ]; then echo "Vulkan install job: nothing to install for this GPU, the host probe is skipped"
+      elif vk_working; then echo "Vulkan install job: Vulkan already works, the built wheels get probed on this host"
+      else echo "Vulkan install job: installs the loader + driver packages, then probes the built wheels on this host"; fi
+    fi
+  fi
   exit 0
 fi
 if [ -n "$ONLY" ]; then
@@ -446,6 +579,14 @@ fi
 [ $((JOBS*2)) -le "$MEM_GB" ] || log "warning: $JOBS jobs want ~$((JOBS*2)) GB RAM, this machine has $MEM_GB GB - lower --jobs if the compiler gets killed"
 mkdir -p "$ROOT"
 ROOT="$(cd "$ROOT" && pwd)"
+GPU_OK=0
+if install_on; then
+  gpu_check
+  log "GPU: $GPU_NAME - $GPU_NOTE"
+  if [ "$OS" = Linux ]; then
+    if [ "$GPU_OK" = 1 ]; then install_vulkan_linux; else log "no Vulkan-capable GPU here: the wheels still build, the host probe is skipped"; fi
+  fi
+fi
 for T in $ONLY; do
   case "$T" in
     macos-*) native_build "$T";;
@@ -459,4 +600,9 @@ for T in $ONLY; do
       if [ "$PULLED" = 1 ] && [ "$KEEP_IMAGES" != 1 ]; then $DOCKER rmi "$IMG" >/dev/null || true; fi;;
   esac
 done
+if [ "$OS" = Linux ] && [ "$GPU_OK" = 1 ] && vk_working; then
+  for T in $ONLY; do
+    case "$T" in *-qemu) continue;; linux-"$HOST_ARCH"-*) host_probe "$T";; esac
+  done
+fi
 log "done: wheels in $ROOT/dist/"

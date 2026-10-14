@@ -1,6 +1,6 @@
 @echo off
 rem build-torch-vulkan.cmd - torch/torchaudio/torchcodec wheels with the PyTorch Vulkan backend for Windows x64 / arm64.
-rem Run it from the Visual Studio "x64 Native Tools" or "ARM64 Native Tools" command prompt, on a machine of that architecture.
+rem Runs from any command prompt: it loads the Visual Studio C++ environment for this machine itself (vswhere + vcvarsall).
 rem Linux and macOS: build-torch-vulkan.sh. build-torch-vulkan.cmd --help for the options, --list for this machine.
 setlocal EnableExtensions DisableDelayedExpansion
 if not defined ROOT set "ROOT=%CD%\pytorch-vulkan"
@@ -14,6 +14,10 @@ if not defined JOBS set "JOBS=%NUMBER_OF_PROCESSORS%"
 if not defined CLEAN set "CLEAN=0"
 if not defined NO_BUNDLE set "NO_BUNDLE=0"
 if not defined CODEC_FFMPEG set "CODEC_FFMPEG=auto"
+if not defined INSTALL_VK set "INSTALL_VK=auto"
+if not defined INSTALL_SDK set "INSTALL_SDK=1"
+if not defined INSTALL_BT set "INSTALL_BT=0"
+set "GPU_OK=unknown"
 set "LIST=0"
 :args
 if "%~1"=="" goto :args_done
@@ -21,6 +25,10 @@ if /i "%~1"=="-l" (set "LIST=1" & shift & goto :args)
 if /i "%~1"=="--list" (set "LIST=1" & shift & goto :args)
 if /i "%~1"=="--clean" (set "CLEAN=1" & shift & goto :args)
 if /i "%~1"=="--no-bundle" (set "NO_BUNDLE=1" & shift & goto :args)
+if /i "%~1"=="--install-vulkan" (set "INSTALL_VK=1" & shift & goto :args)
+if /i "%~1"=="--no-install-vulkan" (set "INSTALL_VK=0" & shift & goto :args)
+if /i "%~1"=="--no-install-sdk" (set "INSTALL_SDK=0" & shift & goto :args)
+if /i "%~1"=="--install-buildtools" (set "INSTALL_BT=1" & shift & goto :args)
 if /i "%~1"=="-h" goto :usage
 if /i "%~1"=="--help" goto :usage
 if /i "%~1"=="/?" goto :usage
@@ -51,6 +59,8 @@ if /i "%HA%"=="AMD64" set "HOSTA=x64"
 if /i "%HA%"=="ARM64" set "HOSTA=arm64"
 if not defined HOSTA (echo unsupported machine %HA% & exit /b 1)
 set "TARGET=windows-%HOSTA%-vulkan"
+call :vs_env
+call :find_sdk
 call :missing
 call :codec_mode
 if not "%LIST%"=="1" goto :build
@@ -58,17 +68,32 @@ echo targets on this Windows-%HOSTA% machine:
 if defined MISS (echo   %TARGET%   missing:%MISS:~0,-1% - see --help & exit /b 0)
 set "NOTE="
 call :want torchcodec && if "%CMODE%"=="skip" set "NOTE= - torchcodec skipped: no local FFmpeg"
+if "%INSTALL_SDK%"=="1" if not exist "%VULKAN_SDK%\Include\vulkan\vulkan.h" set "NOTE=%NOTE% - installs the Vulkan SDK first"
 echo   %TARGET%   ready%NOTE%
+call :install_on || exit /b 0
+call :gpu_check
+echo GPU: %GPU_NAME% - %GPU_NOTE%
 exit /b 0
 :build
 if defined MISS (echo [vk-build] ERROR: %TARGET%: missing:%MISS:~0,-1% - see --help & exit /b 1)
+if not exist "%ROOT%" mkdir "%ROOT%"
+for %%r in ("%ROOT%") do set "ROOT=%%~fr"
+if "%INSTALL_BT%"=="1" call :install_bt || exit /b 1
+call :install_on || goto :sdk_only
+call :vk_job || exit /b 1
+goto :after_vk
+:sdk_only
+call :sdk_job || exit /b 1
+:after_vk
+call :find_loader
+if "%NO_BUNDLE%"=="1" goto :loader_ok
+if "%LOADER%"=="no" (echo [vk-build] ERROR: no vulkan-1.dll to bundle - install the Vulkan runtime, use --install-vulkan or --no-bundle & exit /b 1)
+:loader_ok
 where uv >nul 2>&1 && goto :have_uv
 echo [vk-build] installing uv
 powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex" || (echo [vk-build] ERROR: uv install failed & exit /b 1)
 set "PATH=%USERPROFILE%\.local\bin;%PATH%"
 :have_uv
-if not exist "%ROOT%" mkdir "%ROOT%"
-for %%r in ("%ROOT%") do set "ROOT=%%~fr"
 set "SRC=%ROOT%\src-%TARGET%"
 set "DIST=%ROOT%\dist\%TARGET%"
 if not exist "%SRC%" mkdir "%SRC%"
@@ -115,14 +140,24 @@ echo   --codec-ffmpeg MODE     torchcodec FFmpeg: auto, s3 - PyTorch's LGPL buil
 echo                           local - pkg-config, redistributable only if that FFmpeg is LGPL
 echo                           auto = s3 on x64, local on arm64 if pkg-config finds it, else torchcodec is skipped
 echo   --no-bundle             do not put vulkan-1.dll into the torch wheel                  [NO_BUNDLE=1]
+echo   --install-vulkan        run the Vulkan install job on any host                        [INSTALL_VK=1]
+echo   --no-install-vulkan     never run it                                                  [INSTALL_VK=0]  default: arm64 hosts
+echo   --no-install-sdk        do not install the LunarG Vulkan SDK when it is missing        [INSTALL_SDK=0] default: installs it
+echo   --install-buildtools    install Visual Studio 2022 Build Tools with C++ through winget [INSTALL_BT=1]  several GB, UAC
+echo                           checks the GPU for a Vulkan driver, installs the LunarG SDK for this architecture into
+echo                           %%LOCALAPPDATA%%\VulkanSDK when none is found - checksum-verified, copy-only, may show a UAC
+echo                           prompt - and fetches LunarG's vulkan-1.dll for bundling when the system has none;
+echo                           without a Vulkan driver the wheels still build and the op probe is skipped
 echo   -h, --help
 echo Output
 echo   ROOT\dist\TARGET\PKG-VER+SUFFIX-cpXY-cpXY-win_amd64.whl or win_arm64.whl, sources in ROOT\src-TARGET
 echo   Each build ends with a probe of the Vulkan ops TTS models use.
 echo Needs
-echo   the Visual Studio "x64 Native Tools" or "ARM64 Native Tools" prompt matching this machine, git,
-echo   the LunarG Vulkan SDK - VULKAN_SDK set by its installer, network access; uv is installed if missing
+echo   Visual Studio 2022 or its Build Tools with the C++ workload for this machine - found with vswhere, no special
+echo   prompt needed, or --install-buildtools; git; network access. The LunarG Vulkan SDK and uv are installed if missing
 echo   windows-arm64-vulkan torchcodec: a shared LGPL FFmpeg with its .pc files on PKG_CONFIG_PATH, and pkg-config
+echo   Vulkan on Windows arm64: Snapdragon X has a native Qualcomm driver; older Snapdragons need Microsoft's
+echo   OpenCL, OpenGL, and Vulkan Compatibility Pack from the Microsoft Store
 echo Examples
 echo   build-torch-vulkan.cmd --list
 echo   build-torch-vulkan.cmd
@@ -144,22 +179,22 @@ call :local_ffmpeg && set "CMODE=local"
 exit /b 0
 :missing
 set "MISS="
-if not defined VSCMD_ARG_TGT_ARCH set "MISS=%MISS% the Visual Studio Native Tools prompt,"
-where cl >nul 2>&1 || set "MISS=%MISS% cl.exe - Visual Studio C++ tools,"
-if defined VSCMD_ARG_TGT_ARCH if /i not "%VSCMD_ARG_TGT_ARCH%"=="%HOSTA%" set "MISS=%MISS% a %HOSTA% Native Tools prompt - this one targets %VSCMD_ARG_TGT_ARCH%,"
+if "%INSTALL_BT%"=="1" goto :miss_vs_done
+where cl >nul 2>&1 || set "MISS=%MISS% Visual Studio 2022 C++ build tools for %HOSTA% - add --install-buildtools,"
+if defined VSCMD_ARG_TGT_ARCH if /i not "%VSCMD_ARG_TGT_ARCH%"=="%HOSTA%" set "MISS=%MISS% a %HOSTA% Visual Studio environment - this one targets %VSCMD_ARG_TGT_ARCH%,"
+:miss_vs_done
 where git >nul 2>&1 || set "MISS=%MISS% git,"
-set "LOADER=no"
 if not defined VULKAN_SDK goto :miss_nosdk
-if not exist "%VULKAN_SDK%\Include\vulkan\vulkan.h" set "MISS=%MISS% vulkan.h in %VULKAN_SDK%\Include,"
+if not exist "%VULKAN_SDK%\Include\vulkan\vulkan.h" goto :miss_nosdk
 if not exist "%VULKAN_SDK%\Bin\glslc.exe" set "MISS=%MISS% glslc.exe in %VULKAN_SDK%\Bin,"
 if not exist "%VULKAN_SDK%\Lib\vulkan-1.lib" set "MISS=%MISS% vulkan-1.lib in %VULKAN_SDK%\Lib,"
 goto :miss_loader
 :miss_nosdk
-set "MISS=%MISS% the LunarG Vulkan SDK - VULKAN_SDK is not set,"
+if not "%INSTALL_SDK%"=="1" set "MISS=%MISS% the LunarG Vulkan SDK - VULKAN_SDK is not set, drop --no-install-sdk to install it,"
 :miss_loader
 if "%NO_BUNDLE%"=="1" goto :miss_codec
-if defined VULKAN_SDK if exist "%VULKAN_SDK%\Bin\vulkan-1.dll" set "LOADER=%VULKAN_SDK%\Bin\vulkan-1.dll"
-if "%LOADER%"=="no" if exist "%SystemRoot%\System32\vulkan-1.dll" set "LOADER=%SystemRoot%\System32\vulkan-1.dll"
+call :find_loader
+if "%INSTALL_SDK%"=="1" goto :miss_codec
 if "%LOADER%"=="no" set "MISS=%MISS% vulkan-1.dll to bundle - install the Vulkan runtime or use --no-bundle,"
 :miss_codec
 call :want torchcodec || exit /b 0
@@ -188,8 +223,140 @@ call :build_torch || exit /b 1
 :bp_rest
 call :want torchaudio && (call :build_torchaudio || exit /b 1)
 call :want torchcodec && (call :build_torchcodec || exit /b 1)
-call :probe
+if "%GPU_OK%"=="0" (echo [vk-build] op probe skipped: no Vulkan driver on this machine) else call :probe
 set "CLEANNOW=1"
+exit /b 0
+:install_on
+if "%INSTALL_VK%"=="1" exit /b 0
+if "%INSTALL_VK%"=="0" exit /b 1
+if "%HOSTA%"=="arm64" exit /b 0
+exit /b 1
+:find_sdk
+if defined VULKAN_SDK exit /b 0
+for /f "delims=" %%d in ('dir /b /ad /o-n "%LOCALAPPDATA%\VulkanSDK" 2^>nul') do if not defined VULKAN_SDK set "VULKAN_SDK=%LOCALAPPDATA%\VulkanSDK\%%d"
+if defined VULKAN_SDK exit /b 0
+for /f "delims=" %%d in ('dir /b /ad /o-n "C:\VulkanSDK" 2^>nul') do if not defined VULKAN_SDK set "VULKAN_SDK=C:\VulkanSDK\%%d"
+exit /b 0
+:find_loader
+set "LOADER=no"
+if defined VULKAN_SDK if exist "%VULKAN_SDK%\Bin\vulkan-1.dll" set "LOADER=%VULKAN_SDK%\Bin\vulkan-1.dll"
+if "%LOADER%"=="no" if exist "%ROOT%\tools\vulkanrt-%HOSTA%\vulkan-1.dll" set "LOADER=%ROOT%\tools\vulkanrt-%HOSTA%\vulkan-1.dll"
+if "%LOADER%"=="no" if exist "%SystemRoot%\System32\vulkan-1.dll" set "LOADER=%SystemRoot%\System32\vulkan-1.dll"
+exit /b 0
+:gpu_check
+rem a Vulkan driver registers VulkanDriverName on its display adapter key, or an ICD under Khronos\Vulkan\Drivers
+set "GPU_OK=0"
+set "GPU_NAME=unknown GPU"
+set "PS1=%TEMP%\vk_gpu_%RANDOM%.ps1"
+> "%PS1%" echo($c='HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+>>"%PS1%" echo($a=@(Get-ChildItem $c -ErrorAction SilentlyContinue ^| ForEach-Object {Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue} ^| Where-Object {$_.VulkanDriverName -or $_.VulkanDriverNameWow})
+>>"%PS1%" echo($k=Get-ItemProperty 'HKLM:\SOFTWARE\Khronos\Vulkan\Drivers' -ErrorAction SilentlyContinue
+>>"%PS1%" echo($n=(Get-CimInstance Win32_VideoController ^| Select-Object -First 1).Name
+>>"%PS1%" echo(if($a.Count -gt 0 -or $k){$ok=1}else{$ok=0}
+>>"%PS1%" echo(Write-Output "$ok;$n"
+for /f "usebackq tokens=1* delims=;" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%"`) do (set "GPU_OK=%%a" & set "GPU_NAME=%%b")
+del /q "%PS1%" 2>nul
+if not defined VULKAN_SDK goto :gc_note
+if not exist "%VULKAN_SDK%\Bin\vulkaninfoSDK.exe" goto :gc_note
+"%VULKAN_SDK%\Bin\vulkaninfoSDK.exe" --summary 2>nul | findstr /i "deviceName" | findstr /v /i "llvmpipe" >nul && set "GPU_OK=1"
+:gc_note
+set "GPU_NOTE=Vulkan driver installed"
+if "%GPU_OK%"=="0" set "GPU_NOTE=no Vulkan driver - Snapdragon X: update the Qualcomm graphics driver; older Snapdragon: Microsoft's OpenCL, OpenGL, and Vulkan Compatibility Pack from the Store; other GPUs: the vendor driver"
+exit /b 0
+:vk_job
+call :gpu_check
+echo [vk-build] GPU: %GPU_NAME% - %GPU_NOTE%
+if defined VULKAN_SDK if exist "%VULKAN_SDK%\Include\vulkan\vulkan.h" goto :vj_sdk
+call :sdk_job || exit /b 1
+call :gpu_check
+exit /b 0
+:vj_sdk
+call :sdk_job || exit /b 1
+exit /b 0
+:sdk_job
+if defined VULKAN_SDK if exist "%VULKAN_SDK%\Include\vulkan\vulkan.h" goto :sj_loader
+if not "%INSTALL_SDK%"=="1" (echo [vk-build] ERROR: no Vulkan SDK - see --help & exit /b 1)
+call :install_sdk || exit /b 1
+:sj_loader
+if "%NO_BUNDLE%"=="1" exit /b 0
+call :find_loader
+if not "%LOADER%"=="no" exit /b 0
+call :get_vulkanrt || exit /b 1
+exit /b 0
+:vs_env
+rem already in a Visual Studio environment for this architecture: keep it
+if /i not "%VSCMD_ARG_TGT_ARCH%"=="%HOSTA%" goto :vs_find
+where cl >nul 2>&1 && exit /b 0
+:vs_find
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" exit /b 0
+set "VSCOMP=Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+if "%HOSTA%"=="arm64" set "VSCOMP=Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+set "VSPATH="
+for /f "usebackq delims=" %%i in (`""%VSWHERE%" -latest -products * -requires %VSCOMP% -property installationPath"`) do set "VSPATH=%%i"
+if not defined VSPATH exit /b 0
+if not exist "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" exit /b 0
+echo [vk-build] loading the Visual Studio C++ environment for %HOSTA% from %VSPATH%
+call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" %HOSTA% >nul
+exit /b 0
+:install_bt
+where cl >nul 2>&1 && exit /b 0
+set "VSCOMP=Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+if "%HOSTA%"=="arm64" set "VSCOMP=Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+echo [vk-build] installing Visual Studio 2022 Build Tools with the C++ workload - several GB, a UAC prompt may appear
+winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --silent --accept-package-agreements --accept-source-agreements --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add %VSCOMP% --includeRecommended"
+call :vs_env
+where cl >nul 2>&1 && exit /b 0
+echo [vk-build] ERROR: the C++ build tools are still not usable - finish the Visual Studio install, then run this again
+exit /b 1
+:vk_version
+set "VKPLAT=windows"
+set "RTARCH=X64"
+if "%HOSTA%"=="arm64" (set "VKPLAT=warm" & set "RTARCH=ARM64")
+if defined VKVER exit /b 0
+for /f "usebackq delims=" %%v in (`curl.exe -fsSL https://vulkan.lunarg.com/sdk/latest/%VKPLAT%.txt`) do set "VKVER=%%v"
+if not defined VKVER (echo [vk-build] ERROR: cannot reach vulkan.lunarg.com & exit /b 1)
+exit /b 0
+:check_sha
+set "SHAEXP="
+for /f "usebackq tokens=1" %%s in (`curl.exe -fsSL %~2 2^>nul`) do if not defined SHAEXP set "SHAEXP=%%s"
+if not defined SHAEXP goto :cs_none
+if "%SHAEXP:~63,1%"=="" goto :cs_none
+if not "%SHAEXP:~64,1%"=="" goto :cs_none
+set "SHAGOT="
+for /f "usebackq delims=" %%h in (`powershell -NoProfile -c "(Get-FileHash -Algorithm SHA256 -LiteralPath '%~1').Hash"`) do set "SHAGOT=%%h"
+if /i "%SHAEXP%"=="%SHAGOT%" exit /b 0
+echo [vk-build] ERROR: checksum mismatch for %~nx1
+exit /b 1
+:cs_none
+echo [vk-build] WARNING: no published checksum for %~nx1, skipping verification
+exit /b 0
+:install_sdk
+call :vk_version || exit /b 1
+set "VKEXE=%TEMP%\vulkan_sdk_%VKPLAT%_%VKVER%.exe"
+echo [vk-build] installing the LunarG Vulkan SDK %VKVER% for %VKPLAT% into %LOCALAPPDATA%\VulkanSDK\%VKVER%
+curl.exe -fL -o "%VKEXE%" https://sdk.lunarg.com/sdk/download/%VKVER%/%VKPLAT%/vulkan_sdk.exe || exit /b 1
+call :check_sha "%VKEXE%" https://sdk.lunarg.com/sdk/sha/%VKVER%/%VKPLAT%/vulkan_sdk.exe.txt || exit /b 1
+"%VKEXE%" --root "%LOCALAPPDATA%\VulkanSDK\%VKVER%" --accept-licenses --default-answer --confirm-command install copy_only=1 || exit /b 1
+del /q "%VKEXE%" 2>nul
+set "VULKAN_SDK=%LOCALAPPDATA%\VulkanSDK\%VKVER%"
+if not exist "%VULKAN_SDK%\Include\vulkan\vulkan.h" (echo [vk-build] ERROR: the SDK install did not produce Include\vulkan\vulkan.h & exit /b 1)
+exit /b 0
+:get_vulkanrt
+call :vk_version || exit /b 1
+set "RTZIP=%TEMP%\VulkanRT-%RTARCH%-%VKVER%-Components.zip"
+set "RTDIR=%TEMP%\vulkanrt-%RANDOM%"
+echo [vk-build] fetching LunarG's Vulkan runtime %VKVER% for %RTARCH% to bundle vulkan-1.dll
+curl.exe -fL -o "%RTZIP%" https://sdk.lunarg.com/sdk/download/%VKVER%/%VKPLAT%/VulkanRT-%RTARCH%-%VKVER%-Components.zip || exit /b 1
+powershell -NoProfile -c "Expand-Archive -Force -LiteralPath '%RTZIP%' -DestinationPath '%RTDIR%'" || exit /b 1
+set "RTDLL="
+for /f "delims=" %%f in ('dir /s /b "%RTDIR%\vulkan-1.dll" 2^>nul') do if not defined RTDLL set "RTDLL=%%f"
+for /f "delims=" %%f in ('dir /s /b "%RTDIR%\vulkan-1.dll" 2^>nul ^| findstr /i /c:"%RTARCH%"') do set "RTDLL=%%f"
+if not defined RTDLL (echo [vk-build] ERROR: no vulkan-1.dll inside the runtime package & exit /b 1)
+if not exist "%ROOT%\tools\vulkanrt-%HOSTA%" mkdir "%ROOT%\tools\vulkanrt-%HOSTA%"
+copy /y "%RTDLL%" "%ROOT%\tools\vulkanrt-%HOSTA%\vulkan-1.dll" >nul || exit /b 1
+rmdir /s /q "%RTDIR%"
+del /q "%RTZIP%" 2>nul
 exit /b 0
 :sync_repo
 set "RP=%SRC%\%~1"
@@ -223,7 +390,7 @@ exit /b 0
 set "WHL="
 for %%f in ("%DIST%\torch-%TORCH%+%SUFFIX%-%TAG%-*.whl") do set "WHL=%%~ff"
 if not defined WHL (echo [vk-build] ERROR: torch is not in --pkgs and no torch-%TORCH%+%SUFFIX% %TAG% wheel was built before & exit /b 1)
-call :install_whl || exit /b 1
+"%PY%" -m pip install -q "%WHL%" || exit /b 1
 exit /b 0
 :build_torch
 if not exist "%SRC%\torch\aten\src\ATen\native\vulkan" (echo [vk-build] ERROR: torch %TORCH% has no aten\src\ATen\native\vulkan - pick an older --torch & exit /b 1)
