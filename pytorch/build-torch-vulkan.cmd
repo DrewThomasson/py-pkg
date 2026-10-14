@@ -292,8 +292,12 @@ set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" exit /b 0
 set "VSCOMP=Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 if "%HOSTA%"=="arm64" set "VSCOMP=Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+rem run vswhere outside any ( ) block: its path holds "(x86)", whose ")" would end a for /f clause early
 set "VSPATH="
-for /f "usebackq delims=" %%i in (`""%VSWHERE%" -latest -products * -requires %VSCOMP% -property installationPath"`) do set "VSPATH=%%i"
+set "VSOUT=%TEMP%\vk_vspath_%RANDOM%.txt"
+"%VSWHERE%" -latest -products * -requires %VSCOMP% -property installationPath > "%VSOUT%" 2>nul
+set /p VSPATH=<"%VSOUT%"
+del /q "%VSOUT%" 2>nul
 if not defined VSPATH exit /b 0
 if not exist "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" exit /b 0
 echo [vk-build] loading the Visual Studio C++ environment for %HOSTA% from %VSPATH%
@@ -449,9 +453,13 @@ setlocal
 set "BUILD_VERSION=%CODEC%+%SUFFIX%"
 rem torchcodec's CMake does find_package(pybind11), which never looks inside a pip-installed pybind11
 set "pybind11_ROOT="
-for /f "usebackq delims=" %%d in (`"%PY%" -m pybind11 --cmakedir`) do set "pybind11_ROOT=%%d"
+set "PBOUT=%TEMP%\vk_pybind11_%RANDOM%.txt"
+"%PY%" -m pybind11 --cmakedir > "%PBOUT%" 2>nul
+set /p pybind11_ROOT=<"%PBOUT%"
+del /q "%PBOUT%" 2>nul
 if not defined pybind11_ROOT (echo [vk-build] ERROR: pybind11 is not usable in the build venv & endlocal & exit /b 1)
-if defined CMAKE_PREFIX_PATH (set "CMAKE_PREFIX_PATH=%pybind11_ROOT%;%CMAKE_PREFIX_PATH%") else set "CMAKE_PREFIX_PATH=%pybind11_ROOT%"
+if not defined CMAKE_PREFIX_PATH set "CMAKE_PREFIX_PATH=%pybind11_ROOT%"
+if /i not "%CMAKE_PREFIX_PATH%"=="%pybind11_ROOT%" set "CMAKE_PREFIX_PATH=%pybind11_ROOT%;%CMAKE_PREFIX_PATH%"
 if "%CMODE%"=="s3" set "BUILD_AGAINST_ALL_FFMPEG_FROM_S3=1"
 if "%CMODE%"=="local" set "I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1"
 if "%CMODE%"=="local" echo [vk-build] WARNING: torchcodec built against the local FFmpeg - only redistribute it if that FFmpeg is an LGPL build
