@@ -447,6 +447,11 @@ if "%CMODE%"=="skip" (echo [vk-build] skipping torchcodec: no prebuilt FFmpeg fo
 "%PY%" -m pip install -q pybind11 || exit /b 1
 setlocal
 set "BUILD_VERSION=%CODEC%+%SUFFIX%"
+rem torchcodec's CMake does find_package(pybind11), which never looks inside a pip-installed pybind11
+set "pybind11_ROOT="
+for /f "usebackq delims=" %%d in (`"%PY%" -m pybind11 --cmakedir`) do set "pybind11_ROOT=%%d"
+if not defined pybind11_ROOT (echo [vk-build] ERROR: pybind11 is not usable in the build venv & endlocal & exit /b 1)
+if defined CMAKE_PREFIX_PATH (set "CMAKE_PREFIX_PATH=%pybind11_ROOT%;%CMAKE_PREFIX_PATH%") else set "CMAKE_PREFIX_PATH=%pybind11_ROOT%"
 if "%CMODE%"=="s3" set "BUILD_AGAINST_ALL_FFMPEG_FROM_S3=1"
 if "%CMODE%"=="local" set "I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1"
 if "%CMODE%"=="local" echo [vk-build] WARNING: torchcodec built against the local FFmpeg - only redistribute it if that FFmpeg is an LGPL build
