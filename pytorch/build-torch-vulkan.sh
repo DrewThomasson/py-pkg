@@ -363,6 +363,14 @@ build_torchcodec(){
     return 0
   fi
   "$PY" -m pip install -q pybind11
+  local cml=src/torchcodec/_core/CMakeLists.txt
+  git -C "$SRC/torchcodec" checkout -q -- "$cml"
+  if [ -n "${AUDITWHEEL_PLAT:-}" ] && grep -q 'COMPONENTS Development)' "$SRC/torchcodec/$cml"; then
+    # manylinux Pythons ship no libpython on purpose: a Linux extension gets its Python symbols from the interpreter
+    # at import time, so only the headers (Development.Module) are needed, not the embedding library
+    sed -i 's/COMPONENTS Development)/COMPONENTS Development.Module)/' "$SRC/torchcodec/$cml"
+    log "torchcodec: asking CMake for Python Development.Module only (manylinux has no libpython)"
+  fi
   (
     export BUILD_VERSION="$CODEC+$SUFFIX"
     # torchcodec's CMake does find_package(pybind11), which never looks inside a pip-installed pybind11
@@ -378,6 +386,7 @@ build_torchcodec(){
     pip_wheel torchcodec
     echo "$WHL" > "$DIST/.whl"
   )
+  git -C "$SRC/torchcodec" checkout -q -- "$cml"
   WHL="$(cat "$DIST/.whl")"
   retag
   install_whl
