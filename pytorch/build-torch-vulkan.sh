@@ -365,6 +365,9 @@ build_torchcodec(){
   "$PY" -m pip install -q pybind11
   (
     export BUILD_VERSION="$CODEC+$SUFFIX"
+    # torchcodec's CMake does find_package(pybind11), which never looks inside a pip-installed pybind11
+    pybind11_ROOT="$("$PY" -m pybind11 --cmakedir)"
+    export pybind11_ROOT CMAKE_PREFIX_PATH="$pybind11_ROOT${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
     if [ "$mode" = s3 ]; then
       export BUILD_AGAINST_ALL_FFMPEG_FROM_S3=1
     else
