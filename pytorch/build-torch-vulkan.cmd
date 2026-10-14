@@ -75,6 +75,7 @@ call :gpu_check
 echo GPU: %GPU_NAME% - %GPU_NOTE%
 exit /b 0
 :build
+call :longpath_check
 if defined MISS (echo [vk-build] ERROR: %TARGET%: missing:%MISS:~0,-1% - see --help & exit /b 1)
 if not exist "%ROOT%" mkdir "%ROOT%"
 for %%r in ("%ROOT%") do set "ROOT=%%~fr"
@@ -226,6 +227,13 @@ call :want torchcodec && (call :build_torchcodec || exit /b 1)
 if "%GPU_OK%"=="0" (echo [vk-build] op probe skipped: no Vulkan driver on this machine) else call :probe
 set "CLEANNOW=1"
 exit /b 0
+:longpath_check
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled 2>nul | findstr /i "0x1" >nul && exit /b 0
+echo [vk-build] WARNING: Windows long paths are off. git copes on its own, but the compiler, CMake and Python may still
+echo [vk-build]          hit the 260-character limit deep inside the torch build. Either enable them once, as admin:
+echo [vk-build]            reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
+echo [vk-build]          or keep the tree short, e.g. --root D:\ptv
+exit /b 0
 :install_on
 if "%INSTALL_VK%"=="1" exit /b 0
 if "%INSTALL_VK%"=="0" exit /b 1
@@ -365,12 +373,16 @@ exit /b 0
 :sync_repo
 set "RP=%SRC%\%~1"
 if exist "%RP%\.git" goto :sr_have
-git clone -c core.longpaths=true --recursive %~2 "%RP%" || exit /b 1
+rem "git -c" before the subcommand reaches the submodule clones too ("clone -c" would only reach the top repo)
+git -c core.longpaths=true clone --recursive %~2 "%RP%"
+if not exist "%RP%\.git" exit /b 1
 :sr_have
+git -C "%RP%" config core.longpaths true
 git -C "%RP%" -c core.longpaths=true fetch -q --tags --force origin || exit /b 1
 git -C "%RP%" -c advice.detachedHead=false checkout -q v%~3 || exit /b 1
 git -C "%RP%" -c core.longpaths=true submodule sync -q --recursive || exit /b 1
-git -C "%RP%" -c core.longpaths=true submodule update -q --init --recursive || exit /b 1
+git -C "%RP%" -c core.longpaths=true submodule update -q --init --recursive --force || exit /b 1
+git -C "%RP%" -c core.longpaths=true submodule foreach -q --recursive git config core.longpaths true
 if not "%CLEANNOW%"=="1" exit /b 0
 git -C "%RP%" clean -q -xdf
 git -C "%RP%" submodule foreach -q --recursive git clean -q -xdf
