@@ -138,6 +138,7 @@ echo   --py "3.10 3.12"        Python versions from uv, one full torch build eac
 echo   --suffix TAG            local version tag, e.g. %TORCH%+%SUFFIX%                         [SUFFIX]  default: %SUFFIX%
 echo   --root DIR              sources, venvs and wheels                                     [ROOT]    default: .\pytorch-vulkan
 echo   --jobs N                parallel compile jobs, ~3 GB RAM each with MSVC              [JOBS]    default: CPU threads, capped by RAM
+echo                           RAM minus 8 GB for linking, divided by 3 GB; a failed torch build resumes once with 1 job
 echo   --clean                 git clean the checkouts first - do it when changing versions  [CLEAN=1]
 echo   --codec-ffmpeg MODE     torchcodec FFmpeg: auto, s3 - PyTorch's LGPL builds, x64 only, [CODEC_FFMPEG] default: auto
 echo                           local - pkg-config, redistributable only if that FFmpeg is LGPL
@@ -214,6 +215,8 @@ if exist "%VENV%" rmdir /s /q "%VENV%"
 uv venv -q --seed --python %V% "%VENV%" || exit /b 1
 set "PY=%VENV%\Scripts\python.exe"
 set "PATH=%VENV%\Scripts;%BASEPATH%"
+rem CMake's FindPython checks VIRTUAL_ENV before registry-installed Pythons
+set "VIRTUAL_ENV=%VENV%"
 "%PY%" -m pip install -q cmake ninja setuptools wheel || exit /b 1
 call :want torch && (call :sync_repo torch https://github.com/pytorch/pytorch.git %TORCH% || exit /b 1)
 call :want torchaudio && (call :sync_repo torchaudio https://github.com/pytorch/audio.git %AUDIO% || exit /b 1)
@@ -237,18 +240,23 @@ echo [vk-build]            reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSys
 echo [vk-build]          or keep the tree short, e.g. --root D:\ptv
 exit /b 0
 :size_jobs
-rem MSVC needs ~3 GB per torch compile job; more jobs than RAM allows ends in C1002 / C1356 / LNK1102
+rem MSVC needs ~3 GB per torch compile job, and linking torch_cpu.dll needs several GB on its own while compiles go on;
+rem too little ends in C1002 / C1356 / LNK1102. Jobs = (RAM - 8 GB for the link) / 3 GB
 set "RAM_GB="
-for /f "usebackq delims=" %%m in (`powershell -NoProfile -c "[math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)"`) do set "RAM_GB=%%m"
+set "CL_GB="
+for /f "usebackq tokens=1,2 delims=;" %%a in (`powershell -NoProfile -c "'{0};{1}' -f [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB), [math]::Floor((Get-CimInstance Win32_OperatingSystem).TotalVirtualMemorySize/1MB)"`) do (set "RAM_GB=%%a" & set "CL_GB=%%b")
 if not defined RAM_GB exit /b 0
-set /a "MJ=RAM_GB/3"
+set /a "MJ=(RAM_GB-8)/3"
 if %MJ% LSS 1 set "MJ=1"
+set /a "PF_GB=CL_GB-RAM_GB"
+if %PF_GB% LSS 8 echo [vk-build] WARNING: Windows can commit only %CL_GB% GB - RAM %RAM_GB% GB plus a %PF_GB% GB pagefile. Linking torch_cpu.dll may fail with LNK1102:
+if %PF_GB% LSS 8 echo [vk-build]          set the pagefile to "System managed size" - System Properties, Advanced, Performance, Virtual memory - and reboot
 if defined JOBS_USER goto :sj_user
 if %MJ% LSS %JOBS% set "JOBS=%MJ%"
-echo [vk-build] %JOBS% parallel jobs for %NUMBER_OF_PROCESSORS% CPU threads and %RAM_GB% GB RAM - about 3 GB per MSVC job, --jobs overrides
+echo [vk-build] %JOBS% parallel jobs for %NUMBER_OF_PROCESSORS% CPU threads and %RAM_GB% GB RAM - 8 GB kept for linking, about 3 GB per MSVC job; --jobs overrides
 exit /b 0
 :sj_user
-if %JOBS% GTR %MJ% echo [vk-build] WARNING: --jobs %JOBS% is more than the %MJ% that %RAM_GB% GB RAM supports at about 3 GB per MSVC job - if cl.exe or link.exe run out of memory, use --jobs %MJ%
+if %JOBS% GTR %MJ% echo [vk-build] WARNING: --jobs %JOBS% is more than the %MJ% that %RAM_GB% GB RAM supports with room for linking - if cl.exe or link.exe run out of memory, use --jobs %MJ%
 exit /b 0
 :install_on
 if "%INSTALL_VK%"=="1" exit /b 0
@@ -463,7 +471,15 @@ echo [vk-build] torch: reconfiguring the existing build once to serialize links 
 :bt_fresh_ok
 set "PYTORCH_BUILD_VERSION=%TORCH%+%SUFFIX%"
 set "PYTORCH_BUILD_NUMBER=1"
+call :pip_wheel torch && goto :bt_built
+if "%JOBS%"=="1" (endlocal & exit /b 1)
+rem out of memory is the usual cause at this size: resume with a single job so the remaining links get the whole machine
+echo [vk-build] torch build failed with %JOBS% jobs - resuming once with 1 job; finished objects are kept, Ctrl+C to stop
+set "MAX_JOBS=1"
+set "CMAKE_BUILD_PARALLEL_LEVEL=1"
+set "CMAKE_FRESH="
 call :pip_wheel torch || (endlocal & exit /b 1)
+:bt_built
 endlocal & set "WHL=%WHL%"
 git -C "%SRC%\torch" checkout -q -- %CLAMPG%
 if "%NO_BUNDLE%"=="1" goto :bt_install

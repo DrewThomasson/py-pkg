@@ -57,7 +57,7 @@ chmod +x build-torch-vulkan.sh
 
 You need the Xcode Command Line Tools (`xcode-select --install`), git and curl. When none is found in `~/VulkanSDK`, the script installs the LunarG Vulkan SDK there, checksum-verified. The SDK brings MoltenVK, the loader and `glslc`.
 
-- **Intel Mac:** run `brew install ffmpeg pkg-config` first, otherwise torchcodec is skipped.
+- **Intel Mac:** run `brew install ffmpeg@7 pkg-config` first, otherwise torchcodec is skipped. Homebrew's plain `ffmpeg` is currently newer than torchcodec 0.11.1 supports; the versioned keg is found automatically.
 - **Optional:** `brew install libomp` gives torch multi-threaded CPU ops.
 
 ### Windows
@@ -96,7 +96,7 @@ The two scripts share every option. Each option can also be set with the environ
 | `--py "3.10 3.12"` | `PYS` | `3.12` | Python versions; each one is a full torch build |
 | `--suffix TAG` | `SUFFIX` | `vulkan` | Local version tag: `2.11.0+vulkan` |
 | `--root DIR` | `ROOT` | `./pytorch-vulkan` | Sources, tools, venvs and wheels |
-| `--jobs N` | `JOBS` | CPU threads, capped by RAM | Parallel compile jobs: about 2 GB of RAM each, about 3 GB each with MSVC |
+| `--jobs N` | `JOBS` | CPU threads, capped by RAM | Parallel compile jobs: about 2 GB of RAM each; on Windows (RAM − 8 GB kept for linking) ÷ 3 GB per MSVC job |
 | `--clean` | `CLEAN=1` | | `git clean` the checkouts first; do this when changing versions |
 | `--codec-ffmpeg MODE` | `CODEC_FFMPEG` | `auto` | Where torchcodec's FFmpeg comes from, see [torchcodec and FFmpeg](#torchcodec-and-ffmpeg) |
 | `--no-bundle` | `NO_BUNDLE=1` | | Don't put the Vulkan loader (macOS: plus MoltenVK) into the torch wheel |
@@ -177,9 +177,11 @@ torchcodec links against FFmpeg at build time. `--codec-ffmpeg` picks the source
 | `local` | The FFmpeg that `pkg-config` finds. The wheel is only redistributable if that FFmpeg is an LGPL build (no `--enable-gpl` / `--enable-nonfree`) |
 | `auto` | `s3` where it exists, else `local` if found, else torchcodec is skipped with a note |
 
+In `local` mode the script accepts only the FFmpeg majors the torchcodec checkout lists (4–8 for 0.11.1). If the default FFmpeg is newer, it tries Homebrew's keg-only `ffmpeg@8` down to `ffmpeg@4` and uses the newest supported one.
+
 So on an Intel Mac or Windows on ARM, `auto` needs a local FFmpeg:
 
-- **Intel Mac:** `brew install ffmpeg pkg-config`
+- **Intel Mac:** `brew install ffmpeg@7 pkg-config`
 - **Windows on ARM:** a shared LGPL FFmpeg with its `.pc` files on `PKG_CONFIG_PATH`, and `pkg-config`
 
 At runtime, torchcodec still needs an FFmpeg installed on the user's machine.
@@ -241,6 +243,8 @@ Each one is applied only where needed. Where a source file is patched, it is res
 | `vswhere` path contains `(x86)` | Windows | run outside any `( )` block, read back through a temp file |
 | `M_SQRT2` / `M_2_SQRTPI` undeclared in `vulkan/ops/Clamp.cpp` | Windows (MSVC) | `#define _USE_MATH_DEFINES` added as line 1 for the build |
 | `find_package(pybind11)` can't see pip's pybind11 | all | `pybind11_ROOT` and `CMAKE_PREFIX_PATH` set from `python -m pybind11 --cmakedir` |
+| CMake picks another Python (e.g. Homebrew's framework 3.14) instead of the build venv's | all | `VIRTUAL_ENV` exported for the build venv; CMake's FindPython checks it first |
+| `Unsupported libavcodec version` (FFmpeg newer than torchcodec supports) | `local` mode | supported majors read from the checkout; Homebrew `ffmpeg@N` kegs tried |
 | `Python3_LIBRARY` NOTFOUND: manylinux Pythons ship no `libpython`, on purpose | Linux | torchcodec's `find_package(Python3 ... Development)` switched to `Development.Module` for the build |
 | torchcodec refuses to build against a local FFmpeg | `local` mode | `I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1`, with the LGPL warning printed |
 | Linking `torch_cpu` runs out of memory next to parallel compiles | all | links run one at a time (CMake job pool `vk_link=1`); a tree configured before this is reconfigured once with `CMAKE_FRESH=1`, and compiled objects are kept |
@@ -251,7 +255,7 @@ Each one is applied only where needed. Where a source file is patched, it is res
 |---|---|
 | `missing: ...` from `--list` or at start | Install what it names; `--help` lists each requirement |
 | Compiler killed partway through the torch build | Lower `--jobs`; budget about 2 GB of RAM per job |
-| Windows: `C1002 compiler is out of heap space`, `C1356 unable to find mspdbcore.dll` or `LNK1102 out of memory` | All three mean MSVC ran out of memory. The default `--jobs` is now sized at about 3 GB per job, and links run one at a time; if you set `--jobs` yourself, lower it. A system-managed pagefile also helps |
+| Windows: `C1002 compiler is out of heap space`, `C1356 unable to find mspdbcore.dll` or `LNK1102 out of memory` | All three mean MSVC ran out of memory. The default `--jobs` keeps 8 GB free for linking `torch_cpu.dll`, links run one at a time, and a failed torch build resumes once with 1 job. If it still fails, the commit limit (RAM + pagefile) is too small: set the pagefile to *System managed size* (System Properties → Advanced → Performance → Virtual memory) and reboot; the script warns when the pagefile adds under 8 GB |
 | `Filename too long`, or odd file-not-found errors on Windows | Enable long paths (see [Windows](#windows)) and use a short `--root`, e.g. `D:\ptv` |
 | `torch X has no aten/src/ATen/native/vulkan` | That torch version no longer contains the Vulkan backend; use an older `--torch` |
 | Build broke after changing versions | Rerun with `--clean` |
@@ -264,10 +268,11 @@ Each one is applied only where needed. Where a source file is patched, it is res
 |---|---|
 | Linux x86_64 | Builds end to end: torch, torchaudio, torchcodec, manylinux_2_28 |
 | Windows x64 | Runs from any prompt; torch compiles with the MSVC fixes above; full run pending |
-| Linux aarch64, QEMU, macOS, Windows arm64 | Written to the same pattern; first real runs pending |
+| macOS x86_64 | torch and torchaudio build; torchcodec fixes for FFmpeg and Python selection added, rerun pending |
+| Linux aarch64, QEMU, macOS arm64, Windows arm64 | Written to the same pattern; first real runs pending |
 
 Untested parts:
 
 - **macOS:** the unattended SDK installer run, and relinking and re-signing the bundled dylibs.
 - **Windows:** the PowerShell GPU check, and the layout of LunarG's runtime zip.
-- **Intel Mac:** torch 2.11 itself, since PyTorch no longer builds it there.
+- **Intel Mac:** relinking and re-signing the bundled dylibs (torch itself builds).
