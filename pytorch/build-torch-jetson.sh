@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # build-torch-jetson.bash — torch+torchaudio wheels for JetPack 5 / 6 / 7, all built in docker from a Xavier NX R35 host
-# layout: ROOT = folder of this script ; $ROOT/pytorch/torch, $ROOT/pytorch/torchaudio (shared git repos) ; $ROOT/v51|v61|v70/{venv,wheels,*.log} (per target)
+# layout: ROOT = folder of this script ; $ROOT/pytorch/torch, $ROOT/pytorch/torchaudio (shared git repos) ; $ROOT/v5|v6|v7/{venv,wheels,*.log} (per target)
 # usage:  ./build-torch-jetson.bash 5|6|7 [torch_ver] [audio_ver]
 # env:    RESUME=1 (skip checkout/clean, continue existing build/), ROOT, PYVER (default 3.10, uv-managed CPython), MAX_JOBS (default 3), CCCL_DIR (JP5 only, must live under $ROOT: newer CUB/Thrust headers for CUDA 11.4)
 set -euo pipefail
 JP="${1:?usage: $0 5|6|7 [torch_ver] [audio_ver]}"
 ROOT="${ROOT:-$(cd "$(dirname "$(realpath "$0")")"&&pwd)}"
 case "$JP" in
-	5) TAG=v51;LOCAL=jetson51;TORCH_VER="${2:-2.3.1}";AUDIO_VER="${3:-2.3.1}";MAXVER=2.4.1;ARCH="7.2;8.7";IMAGE="nvcr.io/nvidia/l4t-jetpack:r35.4.1";GPU="--runtime nvidia";;
-	6) TAG=v61;LOCAL=jetson61;TORCH_VER="${2:-2.8.0}";AUDIO_VER="${3:-2.8.0}";ARCH="8.7";IMAGE="nvcr.io/nvidia/l4t-jetpack:r36.4.0";GPU="";;
-	7) TAG=v70;LOCAL=jetson70;TORCH_VER="${2:-2.9.1}";AUDIO_VER="${3:-2.9.1}";ARCH="8.7;11.0";IMAGE="nvcr.io/nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04";GPU="";;
+	5) TAG=v5;LOCAL=jetson51;TORCH_VER="${2:-2.3.1}";AUDIO_VER="${3:-2.3.1}";MAXVER=2.4.1;ARCH="7.2;8.7";IMAGE="nvcr.io/nvidia/l4t-jetpack:r35.4.1";GPU="--runtime nvidia";;
+	6) TAG=v6;LOCAL=jetson61;TORCH_VER="${2:-2.8.0}";AUDIO_VER="${3:-2.8.0}";ARCH="8.7";IMAGE="nvcr.io/nvidia/l4t-jetpack:r36.4.0";GPU="";;
+	7) TAG=v7;LOCAL=jetson70;TORCH_VER="${2:-2.9.1}";AUDIO_VER="${3:-2.9.1}";ARCH="8.7;11.0";IMAGE="nvcr.io/nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04";GPU="";;
 	*) echo "JP must be 5, 6 or 7";exit 1;;
 esac
 if test -n "${MAXVER:-}"&&test "$(printf '%s\n%s\n' "$TORCH_VER" "$MAXVER"|sort -V|tail -1)" != "$MAXVER";then
