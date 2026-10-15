@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
-# build-torch-jetson.bash — torch+torchaudio wheels for JetPack 5 / 6 / 7, all built in docker from a Xavier NX R35 host
-# layout: ROOT = folder of this script ; $ROOT/pytorch/torch, $ROOT/pytorch/torchaudio (shared git repos) ; $ROOT/v5|v6|v7/{venv,wheels,*.log} (per target)
-# usage:  ./build-torch-jetson.bash 5|6|7 [torch_ver] [audio_ver]
+# build-torch-jetson.bash — torch+torchaudio(+torchcodec) wheels for JetPack 5 / 6 / 7, all built in docker from a Xavier NX R35 host
+# layout: ROOT = folder of this script ; $ROOT/pytorch/torch, $ROOT/pytorch/torchaudio, $ROOT/pytorch/torchcodec (shared git repos) ; $ROOT/v5|v6|v7/{venv,wheels,*.log} (per target)
+# usage:  ./build-torch-jetson.bash 5|6|7 [torch_ver] [audio_ver] [codec_ver]
+# torchcodec: only for torch >= 2.9 (JP7), where e2a needs it; none on PyPI for linux aarch64. Pair it with torch:
+# torchcodec 0.9 = torch 2.9, 0.10 = 2.10, 0.11 = 2.11. CPU decoding, built against PyTorch's LGPL FFmpeg 4..8 from S3
+# (BUILD_AGAINST_ALL_FFMPEG_FROM_S3): the wheel carries no FFmpeg and loads the system one (any of those majors) at runtime
 # env:    RESUME=1 (skip checkout/clean, continue existing build/), ROOT, PYVER (default 3.10, uv-managed CPython), MAX_JOBS (default 3), CCCL_DIR (JP5 only, must live under $ROOT: newer CUB/Thrust headers for CUDA 11.4)
 set -euo pipefail
-JP="${1:?usage: $0 5|6|7 [torch_ver] [audio_ver]}"
+JP="${1:?usage: $0 5|6|7 [torch_ver] [audio_ver] [codec_ver]}"
 ROOT="${ROOT:-$(cd "$(dirname "$(realpath "$0")")"&&pwd)}"
 case "$JP" in
 	5) TAG=v5;LOCAL=jetson5;TORCH_VER="${2:-2.3.1}";AUDIO_VER="${3:-2.3.1}";MAXVER=2.4.1;ARCH="7.2;8.7";IMAGE="nvcr.io/nvidia/l4t-jetpack:r35.4.1";GPU="--runtime nvidia";;
 	6) TAG=v6;LOCAL=jetson6;TORCH_VER="${2:-2.8.0}";AUDIO_VER="${3:-2.8.0}";ARCH="8.7";IMAGE="nvcr.io/nvidia/l4t-jetpack:r36.4.0";GPU="";;
-	7) TAG=v7;LOCAL=jetson7;TORCH_VER="${2:-2.9.1}";AUDIO_VER="${3:-2.9.1}";ARCH="8.7;11.0";IMAGE="nvcr.io/nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04";GPU="";;
+	7) TAG=v7;LOCAL=jetson7;TORCH_VER="${2:-2.9.1}";AUDIO_VER="${3:-2.9.1}";CODEC_VER="${4:-0.9.1}";ARCH="8.7;11.0";IMAGE="nvcr.io/nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04";GPU="";;
 	*) echo "JP must be 5, 6 or 7";exit 1;;
 esac
 if test -n "${MAXVER:-}"&&test "$(printf '%s\n%s\n' "$TORCH_VER" "$MAXVER"|sort -V|tail -1)" != "$MAXVER";then
 	echo "JP$JP supports torch <= $MAXVER (asked $TORCH_VER)";exit 1
 fi
+CODEC_VER="${CODEC_VER:-}"
 PYVER="${PYVER:-3.10}"
 # repos under $ROOT/pytorch, or next to this script when it lives in that folder itself ($ROOT/torch already a clone)
 REPOS="${REPOS:-$ROOT/pytorch}"
@@ -48,6 +52,10 @@ build(){
 		checkout "$REPOS/torch" https://github.com/pytorch/pytorch "v$TORCH_VER"
 		checkout "$REPOS/torchaudio" https://github.com/pytorch/audio "v$AUDIO_VER"
 	fi
+	# torchcodec is also cloned under RESUME=1 when missing (adding it to a target whose torch is already built)
+	if test -n "$CODEC_VER" && { test "${RESUME:-0}" != 1 || test ! -d "$REPOS/torchcodec/.git";};then
+		checkout "$REPOS/torchcodec" https://github.com/meta-pytorch/torchcodec "v$CODEC_VER"
+	fi
 	if test -x "$OUT/venv/bin/python";then
 		test "$("$OUT/venv/bin/python" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null)" = "$PYVER"||rm -rf "$OUT/venv"
 	else
@@ -78,15 +86,39 @@ build(){
 	export BUILD_VERSION="$AUDIO_VER+$LOCAL" PYTORCH_VERSION="$TORCH_VER+$LOCAL" USE_FFMPEG=0 BUILD_SOX=0
 	python setup.py bdist_wheel -d "$OUT/wheels" 2>&1|tee "$OUT/torchaudio-build.log"
 	pip install --force-reinstall --no-deps "$OUT/wheels/torchaudio-$AUDIO_VER+$LOCAL-"*.whl
+	if test -n "$CODEC_VER";then
+		cd "$REPOS/torchcodec"
+		pip install pybind11
+		# a Linux extension takes its Python symbols from the interpreter: headers only (uv's CPython may ship no libpython)
+		git checkout -q -- src/torchcodec/_core/CMakeLists.txt src/torchcodec/_core/fetch_and_expose_non_gpl_ffmpeg_libs.cmake
+		sed -i 's/COMPONENTS Development)/COMPONENTS Development.Module)/' src/torchcodec/_core/CMakeLists.txt
+		# torchcodec < 0.10 fetches the x86_64 FFmpeg on any Linux: take 0.10's fetch file, identical but for its
+		# linux_aarch64 branch (same 2025-03-14 S3 set, own sha256s)
+		if ! grep -q linux_aarch64 src/torchcodec/_core/fetch_and_expose_non_gpl_ffmpeg_libs.cmake;then
+			git fetch -q --force origin tag v0.10.0 --no-tags
+			git show v0.10.0:src/torchcodec/_core/fetch_and_expose_non_gpl_ffmpeg_libs.cmake > src/torchcodec/_core/fetch_and_expose_non_gpl_ffmpeg_libs.cmake
+		fi
+		# torchcodec's CMake does find_package(pybind11), which never looks inside a pip-installed pybind11
+		pybind11_ROOT="$(python -m pybind11 --cmakedir)"
+		export pybind11_ROOT CMAKE_PREFIX_PATH="$pybind11_ROOT${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+		export BUILD_VERSION="$CODEC_VER+$LOCAL" BUILD_AGAINST_ALL_FFMPEG_FROM_S3=1 ENABLE_CUDA=0
+		pip wheel . --no-build-isolation --no-deps -v -w "$OUT/wheels" 2>&1|tee "$OUT/torchcodec-build.log"
+		git checkout -q -- src/torchcodec/_core/CMakeLists.txt src/torchcodec/_core/fetch_and_expose_non_gpl_ffmpeg_libs.cmake
+		pip install --force-reinstall --no-deps "$OUT/wheels/torchcodec-$CODEC_VER+$LOCAL-"*.whl
+	fi
 	cd /tmp
 	python -c "import torch,torchaudio;print(torch.__version__,torch.version.cuda,torch.cuda.get_arch_list(),torchaudio.__version__)"
+	if test -n "$CODEC_VER";then
+		# the wheel loads the system FFmpeg libs at import
+		python -c "import torchcodec;print('torchcodec',torchcodec.__version__)"||echo "torchcodec built, its import needs the FFmpeg shared libs (apt-get install ffmpeg)"
+	fi
 	ls -1 "$OUT/wheels"
 }
 free -g|awk '/Swap/{if($2<15)print "WARNING: swap < 16G, torch build will likely OOM"}'
 if test -z "${IN_CONTAINER:-}";then
 	mkdir -p "$REPOS" "$OUT"
 	exec 9>"$LOCK";flock -n 9||{ echo "another build is using $REPOS";exit 1;}
-	docker run --rm -it $GPU -e IN_CONTAINER=1 -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e PYVER="$PYVER" -e RESUME="${RESUME:-0}" -e ROOT="$ROOT" -e REPOS="$REPOS" -e MAX_JOBS="${MAX_JOBS:-3}" -e CCCL_DIR="${CCCL_DIR:-}" -v "$ROOT:$ROOT" -v "$(realpath "$0"):/build.bash:ro" "$IMAGE" bash -c "bash /build.bash $JP $TORCH_VER $AUDIO_VER"
+	docker run --rm -it $GPU -e IN_CONTAINER=1 -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e PYVER="$PYVER" -e RESUME="${RESUME:-0}" -e ROOT="$ROOT" -e REPOS="$REPOS" -e MAX_JOBS="${MAX_JOBS:-3}" -e CCCL_DIR="${CCCL_DIR:-}" -v "$ROOT:$ROOT" -v "$(realpath "$0"):/build.bash:ro" "$IMAGE" bash -c "bash /build.bash $JP $TORCH_VER $AUDIO_VER $CODEC_VER"
 	exit 0
 fi
 trap 'chown -R "$HOST_UID:$HOST_GID" "$REPOS" "$OUT" "$ROOT/.uv" 2>/dev/null||true' EXIT
