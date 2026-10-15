@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# jetson_torch_build.bash — torch+torchaudio wheels for JetPack 5 / 6 / 7, all built in docker from a Xavier NX R35 host
+# build-torch-jetson.bash — torch+torchaudio wheels for JetPack 5 / 6 / 7, all built in docker from a Xavier NX R35 host
 # layout: ROOT = folder of this script ; $ROOT/pytorch/torch, $ROOT/pytorch/torchaudio (shared git repos) ; $ROOT/v51|v61|v70/{venv,wheels,*.log} (per target)
-# usage:  ./jetson_torch_build.bash 5|6|7 [torch_ver] [audio_ver]
+# usage:  ./build-torch-jetson.bash 5|6|7 [torch_ver] [audio_ver]
 # env:    RESUME=1 (skip checkout/clean, continue existing build/), ROOT, PYVER (default 3.10, uv-managed CPython), MAX_JOBS (default 3), CCCL_DIR (JP5 only, must live under $ROOT: newer CUB/Thrust headers for CUDA 11.4)
 set -euo pipefail
 JP="${1:?usage: $0 5|6|7 [torch_ver] [audio_ver]}"
