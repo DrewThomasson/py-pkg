@@ -143,12 +143,12 @@ echo                           auto = s3 on x64, local on arm64 if pkg-config fi
 echo   --no-bundle             do not put vulkan-1.dll into the torch wheel                  [NO_BUNDLE=1]
 echo   --install-vulkan        run the Vulkan install job on any host                        [INSTALL_VK=1]
 echo   --no-install-vulkan     never run it                                                  [INSTALL_VK=0]  default: arm64 hosts
+echo                           checks the GPU for a Vulkan driver; without one the wheels still build and the op
+echo                           probe is skipped, with a hint on which driver to install
 echo   --no-install-sdk        do not install the LunarG Vulkan SDK when it is missing        [INSTALL_SDK=0] default: installs it
+echo                           latest SDK for this architecture into %%LOCALAPPDATA%%\VulkanSDK, checksum-verified,
+echo                           copy-only, may show a UAC prompt; also fetches LunarG's vulkan-1.dll to bundle if needed
 echo   --install-buildtools    install Visual Studio 2022 Build Tools with C++ through winget [INSTALL_BT=1]  several GB, UAC
-echo                           checks the GPU for a Vulkan driver, installs the LunarG SDK for this architecture into
-echo                           %%LOCALAPPDATA%%\VulkanSDK when none is found - checksum-verified, copy-only, may show a UAC
-echo                           prompt - and fetches LunarG's vulkan-1.dll for bundling when the system has none;
-echo                           without a Vulkan driver the wheels still build and the op probe is skipped
 echo   -h, --help
 echo Output
 echo   ROOT\dist\TARGET\PKG-VER+SUFFIX-cpXY-cpXY-win_amd64.whl or win_arm64.whl, sources in ROOT\src-TARGET
@@ -416,6 +416,18 @@ if not exist "%SRC%\torch\requirements-build.txt" goto :bt_req
 if not exist "%SRC%\torch\requirements.txt" goto :bt_env
 "%PY%" -m pip install -q -r "%SRC%\torch\requirements.txt" || exit /b 1
 :bt_env
+rem torch's Vulkan Clamp.cpp uses M_SQRT2/M_2_SQRTPI, which MSVC's cmath only defines after _USE_MATH_DEFINES;
+rem upstream never builds Vulkan on Windows, so add the define on line 1 for this build and restore the file after
+set "CLAMPG=aten/src/ATen/native/vulkan/ops/Clamp.cpp"
+set "CLAMP=%SRC%\torch\aten\src\ATen\native\vulkan\ops\Clamp.cpp"
+git -C "%SRC%\torch" checkout -q -- %CLAMPG%
+findstr /c:"_USE_MATH_DEFINES" "%CLAMP%" >nul && goto :bt_math_ok
+findstr /r /c:"M_SQRT2" /c:"M_2_SQRTPI" "%CLAMP%" >nul || goto :bt_math_ok
+> "%CLAMP%.new" echo #define _USE_MATH_DEFINES
+type "%CLAMP%" >> "%CLAMP%.new"
+move /y "%CLAMP%.new" "%CLAMP%" >nul || exit /b 1
+echo [vk-build] torch: added _USE_MATH_DEFINES to vulkan\ops\Clamp.cpp for MSVC
+:bt_math_ok
 setlocal
 rem USE_VULKAN_WRAPPER is Android-only in torch: desktop builds always link the Vulkan loader, hence the bundling
 set "USE_VULKAN=1"
@@ -428,6 +440,7 @@ set "PYTORCH_BUILD_VERSION=%TORCH%+%SUFFIX%"
 set "PYTORCH_BUILD_NUMBER=1"
 call :pip_wheel torch || (endlocal & exit /b 1)
 endlocal & set "WHL=%WHL%"
+git -C "%SRC%\torch" checkout -q -- %CLAMPG%
 if "%NO_BUNDLE%"=="1" goto :bt_install
 call :bundle || exit /b 1
 :bt_install
