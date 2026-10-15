@@ -57,7 +57,7 @@ chmod +x build-torch-vulkan.sh
 
 You need the Xcode Command Line Tools (`xcode-select --install`), git and curl. When none is found in `~/VulkanSDK`, the script installs the LunarG Vulkan SDK there, checksum-verified. The SDK brings MoltenVK, the loader and `glslc`.
 
-- **Intel Mac:** run `brew install ffmpeg@7 pkg-config` first, otherwise torchcodec is skipped. Homebrew's plain `ffmpeg` is currently newer than torchcodec 0.11.1 supports; the versioned keg is found automatically.
+- **Intel Mac:** torchcodec needs a local FFmpeg it supports. With Homebrew present, the script installs one itself (see [torchcodec and FFmpeg](#torchcodec-and-ffmpeg)); `--no-install-ffmpeg` turns that off.
 - **Optional:** `brew install libomp` gives torch multi-threaded CPU ops.
 
 ### Windows
@@ -101,6 +101,7 @@ The two scripts share every option. Each option can also be set with the environ
 | `--codec-ffmpeg MODE` | `CODEC_FFMPEG` | `auto` | Where torchcodec's FFmpeg comes from, see [torchcodec and FFmpeg](#torchcodec-and-ffmpeg) |
 | `--no-bundle` | `NO_BUNDLE=1` | | Don't put the Vulkan loader (macOS: plus MoltenVK) into the torch wheel |
 | `--no-install-sdk` | `INSTALL_SDK=0` | installs it | Don't install the LunarG SDK when it's missing (macOS, Windows) |
+| `--no-install-ffmpeg` | `INSTALL_FFMPEG=0` | installs it | Don't install a Homebrew `ffmpeg@N` keg for torchcodec (macOS, `.sh` only) |
 | `--install-vulkan` | `INSTALL_VK=1` | arm64 hosts only | Run the [Vulkan install job](#vulkan-install-job) on any host |
 | `--no-install-vulkan` | `INSTALL_VK=0` | | Never run it |
 | `--macos-min X.Y` | `MACOS_MIN` | `11.0` | Oldest macOS the wheels run on (`.sh` only) |
@@ -181,7 +182,7 @@ In `local` mode the script accepts only the FFmpeg majors the torchcodec checkou
 
 So on an Intel Mac or Windows on ARM, `auto` needs a local FFmpeg:
 
-- **Intel Mac:** `brew install ffmpeg@7 pkg-config`
+- **Intel Mac:** installed automatically when none fits. The script reads the FFmpeg majors torchcodec lists (8 down to 4 for 0.11.1) and installs Homebrew's keg-only `ffmpeg@N` from the newest down, checking each one's `libavcodec`. A keg torchcodec rejects is removed again, and a keg that was already installed, including `ffmpeg@8` as an alias of your main `ffmpeg`, is never touched. Today this lands on `ffmpeg@7`: Homebrew's `ffmpeg@8` follows FFmpeg 8.1 (`libavcodec` 63), while torchcodec 0.11.1 stops at 8.0 (`libavcodec` 62). Your default `ffmpeg` stays as it is
 - **Windows on ARM:** a shared LGPL FFmpeg with its `.pc` files on `PKG_CONFIG_PATH`, and `pkg-config`
 
 At runtime, torchcodec still needs an FFmpeg installed on the user's machine.
@@ -243,6 +244,7 @@ Each one is applied only where needed. Where a source file is patched, it is res
 | `vswhere` path contains `(x86)` | Windows | run outside any `( )` block, read back through a temp file |
 | `M_SQRT2` / `M_2_SQRTPI` undeclared in `vulkan/ops/Clamp.cpp` | Windows (MSVC) | `#define _USE_MATH_DEFINES` added as line 1 for the build |
 | `find_package(pybind11)` can't see pip's pybind11 | all | `pybind11_ROOT` and `CMAKE_PREFIX_PATH` set from `python -m pybind11 --cmakedir` |
+| A rerun of torchcodec still uses the Python / FFmpeg of a failed run (CMake and `pkg_check_modules` cache them) | all | torchcodec's build directory is removed before each build; it configures fresh in seconds |
 | CMake picks another Python (e.g. Homebrew's framework 3.14) instead of the build venv's | all | `VIRTUAL_ENV` exported for the build venv; CMake's FindPython checks it first |
 | `Unsupported libavcodec version` (FFmpeg newer than torchcodec supports) | `local` mode | supported majors read from the checkout; Homebrew `ffmpeg@N` kegs tried |
 | `Python3_LIBRARY` NOTFOUND: manylinux Pythons ship no `libpython`, on purpose | Linux | torchcodec's `find_package(Python3 ... Development)` switched to `Development.Module` for the build |

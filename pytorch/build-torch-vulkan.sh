@@ -23,6 +23,7 @@ CODEC_FFMPEG="${CODEC_FFMPEG:-auto}"
 MACOS_MIN="${MACOS_MIN:-11.0}"
 INSTALL_VK="${INSTALL_VK:-auto}"
 INSTALL_SDK="${INSTALL_SDK:-1}"
+INSTALL_FFMPEG="${INSTALL_FFMPEG:-1}"
 LIST=0
 IN_CONTAINER=""
 log(){ echo "[vk-build] $*"; }
@@ -69,6 +70,7 @@ Options                                                                         
   --macos-min X.Y         oldest macOS the wheels run on                                   [MACOS_MIN] default: $MACOS_MIN
   --keep-images           keep the Docker images this run pulled                           [KEEP_IMAGES=1] default: removed
   --no-install-sdk        macOS: do not install the LunarG SDK when it is missing          [INSTALL_SDK=0] default: installs it
+  --no-install-ffmpeg     macOS: do not install an ffmpeg@N keg for torchcodec             [INSTALL_FFMPEG=0] default: installs it
                           (latest SDK into ~/VulkanSDK, checksum-verified; brings MoltenVK, the loader and glslc)
   --install-vulkan        run the Vulkan install job on any host                           [INSTALL_VK=1]
   --no-install-vulkan     never run it                                                     [INSTALL_VK=0]  default: arm64/aarch64 hosts
@@ -85,7 +87,7 @@ Needs
   Linux: Docker (used directly as root, through sudo otherwise) and network access
     linux-aarch64-vulkan-qemu: QEMU arm64 binfmt (docker run --privileged --rm tonistiigi/binfmt --install arm64)
   macOS: Xcode Command Line Tools, git, curl, the LunarG Vulkan SDK (found in ~/VulkanSDK, or VULKAN_SDK=<sdk>/macOS)
-    macos-x86_64-vulkan torchcodec: brew install ffmpeg pkg-config
+    macos-x86_64-vulkan torchcodec: Homebrew; the newest ffmpeg@N keg torchcodec accepts is installed automatically
   uv is installed if missing; Python versions come from uv (macOS) or the manylinux image (Linux)
   Vulkan install job on Linux: apt, dnf or pacman, through sudo when not root
 Examples
@@ -117,6 +119,7 @@ while [ $# -gt 0 ]; do
     --install-vulkan) INSTALL_VK=1;;
     --no-install-vulkan) INSTALL_VK=0;;
     --no-install-sdk) INSTALL_SDK=0;;
+    --no-install-ffmpeg) INSTALL_FFMPEG=0;;
     --in-container) need "$@"; IN_CONTAINER="$2"; shift;;
     -h|--help) usage; exit 0;;
     *) die "unknown option: $1 (see --help)";;
@@ -130,11 +133,64 @@ macos_sdk(){
   if [ -n "${VULKAN_SDK:-}" ]; then echo "$VULKAN_SDK"; return 0; fi
   ls -d "$HOME"/VulkanSDK/*/macOS 2>/dev/null | sort -V | tail -1 || true
 }
-local_ffmpeg(){ command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libavutil libavcodec libavformat libavfilter libswscale libswresample; }
+codec_avcodec_ok(){  # libavcodec major -> ok if this torchcodec supports it (read from its checkout, 58..62 = FFmpeg 4..8 otherwise)
+  local f majors="58 59 60 61 62"
+  f="${SRC:-/nonexistent}/torchcodec/src/torchcodec/share/cmake/TorchCodec/ffmpeg_versions.cmake"
+  if [ -f "$f" ]; then majors="$(grep -o 'libavcodec_major_version} STREQUAL "[0-9]*"' "$f" | grep -o '"[0-9]*"' | tr -d '"' | tr '\n' ' ')"; fi
+  case " $majors " in *" $1 "*) return 0;; esac
+  return 1
+}
+ffmpeg_pc_dir(){  # prints the pkg-config dir to prepend ("" = the default one) for an FFmpeg this torchcodec supports
+  command -v pkg-config >/dev/null 2>&1 || return 1
+  local d v pcp bp="" cands="DEFAULT"
+  if command -v brew >/dev/null 2>&1; then bp="$(brew --prefix 2>/dev/null || true)"; fi
+  if [ -n "$bp" ]; then
+    for d in ffmpeg@8 ffmpeg@7 ffmpeg@6 ffmpeg@5 ffmpeg@4; do if [ -d "$bp/opt/$d/lib/pkgconfig" ]; then cands="$cands $bp/opt/$d/lib/pkgconfig"; fi; done
+  fi
+  for d in $cands; do
+    if [ "$d" = DEFAULT ]; then pcp=""; else pcp="$d"; fi
+    v="$(PKG_CONFIG_PATH="$pcp${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" pkg-config --modversion libavcodec 2>/dev/null || true)"
+    [ -n "$v" ] || continue
+    codec_avcodec_ok "${v%%.*}" || continue
+    PKG_CONFIG_PATH="$pcp${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" pkg-config --exists libavutil libavcodec libavformat libavfilter libswscale libswresample || continue
+    echo "$pcp"
+    return 0
+  done
+  return 1
+}
+ffmpeg_hint(){  # why no usable local FFmpeg was found, and what to install
+  local v; v="$(pkg-config --modversion libavcodec 2>/dev/null || true)"
+  if [ -n "$v" ] && ! codec_avcodec_ok "${v%%.*}"; then echo "the installed FFmpeg (libavcodec $v) is newer than torchcodec $CODEC supports"
+  else echo "no FFmpeg dev libs found - set PKG_CONFIG_PATH, or on macOS let the script install one with Homebrew"; fi
+}
+local_ffmpeg(){ ffmpeg_pc_dir >/dev/null; }
+codec_ffmpeg_majors(){  # FFmpeg majors this torchcodec maps libavcodec to, newest first (8 7 6 5 4 for 0.11.1)
+  local f="${SRC:-/nonexistent}/torchcodec/src/torchcodec/share/cmake/TorchCodec/ffmpeg_versions.cmake"
+  if [ -f "$f" ]; then grep -o 'set(ffmpeg_major_version "[0-9]*")' "$f" | grep -o '[0-9][0-9]*' | sort -rn | uniq | tr '\n' ' '; else echo "8 7 6 5 4"; fi
+}
+can_brew_ffmpeg(){ [ "$OS" = Darwin ] && [ "$INSTALL_FFMPEG" = 1 ] && command -v brew >/dev/null 2>&1; }
+brew_install_ffmpeg(){  # install the newest Homebrew ffmpeg@N keg whose libavcodec this torchcodec accepts
+  local n bp v
+  can_brew_ffmpeg || return 1
+  bp="$(brew --prefix)"
+  if ! command -v pkg-config >/dev/null 2>&1; then log "installing pkgconf with Homebrew"; brew install -q pkgconf || return 1; fi
+  for n in $(codec_ffmpeg_majors); do
+    # already installed (by name, or as an alias of the main ffmpeg formula): ffmpeg_pc_dir has judged it, never touch it
+    [ -d "$bp/opt/ffmpeg@$n/lib/pkgconfig" ] && continue
+    if brew list --versions "ffmpeg@$n" >/dev/null 2>&1; then continue; fi
+    log "installing ffmpeg@$n with Homebrew for torchcodec (keg-only: your default ffmpeg is left as it is)"
+    if ! brew install -q "ffmpeg@$n"; then log "ffmpeg@$n is not installable here, trying the next major"; continue; fi
+    if ffmpeg_pc_dir >/dev/null; then return 0; fi
+    v="$(PKG_CONFIG_PATH="$bp/opt/ffmpeg@$n/lib/pkgconfig" pkg-config --modversion libavcodec 2>/dev/null || echo '?')"
+    log "ffmpeg@$n has libavcodec $v, which torchcodec $CODEC does not accept - removing it again"
+    brew uninstall -q "ffmpeg@$n" >/dev/null 2>&1 || true
+  done
+  return 1
+}
 codec_mode(){  # target -> s3 | local | skip
   if [ "$CODEC_FFMPEG" != auto ]; then echo "$CODEC_FFMPEG"; return 0; fi
   case "$1" in
-    macos-x86_64-*) if local_ffmpeg; then echo local; else echo skip; fi;;
+    macos-x86_64-*) if local_ffmpeg || can_brew_ffmpeg; then echo local; else echo skip; fi;;
     *) echo s3;;
   esac
 }
@@ -232,6 +288,7 @@ host_probe(){  # target: install the built wheels into a host venv and run the o
     rm -rf "$venv"
     uv venv -q --seed --python "$V" "$venv"
     PY="$venv/bin/python"
+    export VIRTUAL_ENV="$venv"
     WHL="$(ls "$DIST"/torch-*-"$TAG"-*.whl 2>/dev/null | head -1 || true)"
     if [ -z "$WHL" ]; then log "no torch $TAG wheel in $DIST to probe"; continue; fi
     "$PY" -m pip install -q "$WHL"
@@ -365,10 +422,12 @@ build_torchaudio(){
 build_torchcodec(){
   local mode; mode="$(codec_mode "$TARGET")"
   if [ "$mode" = skip ]; then
-    log "skipping torchcodec: no prebuilt FFmpeg for $TARGET and no local one (brew install ffmpeg pkg-config, or --codec-ffmpeg)"
+    log "skipping torchcodec: no prebuilt FFmpeg for $TARGET and no usable local one: $(ffmpeg_hint)"
     return 0
   fi
   "$PY" -m pip install -q pybind11
+  # torchcodec builds in minutes: always configure fresh, a cached CMake keeps the Python and the FFmpeg it found first
+  rm -rf "$SRC/torchcodec/build"
   local cml=src/torchcodec/_core/CMakeLists.txt
   git -C "$SRC/torchcodec" checkout -q -- "$cml"
   if [ -n "${AUDITWHEEL_PLAT:-}" ] && grep -q 'COMPONENTS Development)' "$SRC/torchcodec/$cml"; then
@@ -385,7 +444,13 @@ build_torchcodec(){
     if [ "$mode" = s3 ]; then
       export BUILD_AGAINST_ALL_FFMPEG_FROM_S3=1
     else
-      local_ffmpeg || die "pkg-config cannot find a complete shared FFmpeg dev set (set PKG_CONFIG_PATH, or --codec-ffmpeg s3)"
+      local pcp
+      if ! pcp="$(ffmpeg_pc_dir)"; then
+        brew_install_ffmpeg || die "no usable local FFmpeg for torchcodec: $(ffmpeg_hint)"
+        pcp="$(ffmpeg_pc_dir)"
+      fi
+      if [ -n "$pcp" ]; then export PKG_CONFIG_PATH="$pcp${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"; fi
+      log "torchcodec: FFmpeg $(pkg-config --modversion libavcodec | cut -d. -f1) libavcodec from ${pcp:-the default pkg-config path}"
       export I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1
       log "WARNING: torchcodec built against the local FFmpeg - only redistribute it if that FFmpeg is an LGPL build"
     fi
@@ -466,6 +531,8 @@ native_build(){  # target
     uv venv -q --seed --python "$interp" "$venv"
     PY="$venv/bin/python"
     export PATH="$venv/bin:$base_path"
+    # CMake's FindPython checks VIRTUAL_ENV before macOS framework Pythons (e.g. Homebrew's) and PATH
+    export VIRTUAL_ENV="$venv"
     "$PY" -m pip install -q cmake ninja setuptools wheel
     if want torch; then sync_repo torch https://github.com/pytorch/pytorch.git "$TORCH" "$clean_now"; fi
     if want torchaudio; then sync_repo torchaudio https://github.com/pytorch/audio.git "$AUDIO" "$clean_now"; fi
@@ -558,14 +625,15 @@ missing(){
         [ -f "$sdk/lib/libvulkan.1.dylib" ] || m="$m Vulkan loader in $sdk/lib,"
         [ -f "$sdk/lib/libMoltenVK.dylib" ] || m="$m MoltenVK in $sdk/lib,"
       fi
-      if want torchcodec && [ "$CODEC_FFMPEG" = local ] && ! local_ffmpeg; then m="$m FFmpeg dev libs (brew install ffmpeg pkg-config),"; fi;;
+      if want torchcodec && [ "$CODEC_FFMPEG" = local ] && ! local_ffmpeg && ! can_brew_ffmpeg; then m="$m usable FFmpeg - $(ffmpeg_hint),"; fi;;
   esac
   if [ -n "$m" ]; then echo "missing:${m%,} (see --help)"; fi
 }
 note(){
   case "$1" in *-qemu) echo " (only with --only)";; esac
   case "$1" in macos-*) if [ "$INSTALL_SDK" = 1 ] && [ ! -f "$(macos_sdk)/include/vulkan/vulkan.h" ]; then echo " (installs the Vulkan SDK first)"; fi;; esac
-  if want torchcodec && [ "$(codec_mode "$1")" = skip ]; then echo " (torchcodec skipped: no local FFmpeg)"; fi
+  if want torchcodec && [ "$(codec_mode "$1")" = skip ]; then echo " (torchcodec skipped: $(ffmpeg_hint))"; fi
+  if want torchcodec && [ "$(codec_mode "$1")" = local ] && ! local_ffmpeg; then echo " (installs a torchcodec-compatible ffmpeg@N with Homebrew)"; fi
 }
 if [ "$LIST" = 1 ]; then
   echo "targets on this $HOST machine:"
