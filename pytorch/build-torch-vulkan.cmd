@@ -515,6 +515,8 @@ exit /b 0
 :build_torchcodec
 if "%CMODE%"=="skip" (echo [vk-build] skipping torchcodec: no prebuilt FFmpeg for %TARGET% and pkg-config finds no local one - see --help & exit /b 0)
 "%PY%" -m pip install -q pybind11 || exit /b 1
+rem torchcodec builds in minutes: always configure fresh, a cached CMake keeps the Python and the FFmpeg it found first
+if exist "%SRC%\torchcodec\build" rmdir /s /q "%SRC%\torchcodec\build"
 setlocal
 set "BUILD_VERSION=%CODEC%+%SUFFIX%"
 rem torchcodec's CMake does find_package(pybind11), which never looks inside a pip-installed pybind11
