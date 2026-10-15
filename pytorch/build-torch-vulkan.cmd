@@ -10,6 +10,7 @@ if not defined CODEC set "CODEC=0.11.1"
 if not defined SUFFIX set "SUFFIX=vulkan"
 if not defined PYS set "PYS=3.12"
 if not defined PKGS set "PKGS=torch torchaudio torchcodec"
+if defined JOBS set "JOBS_USER=1"
 if not defined JOBS set "JOBS=%NUMBER_OF_PROCESSORS%"
 if not defined CLEAN set "CLEAN=0"
 if not defined NO_BUNDLE set "NO_BUNDLE=0"
@@ -39,7 +40,7 @@ if /i "%~1"=="--torchcodec" (set "OPT=CODEC" & goto :value)
 if /i "%~1"=="--py" (set "OPT=PYS" & goto :value)
 if /i "%~1"=="--suffix" (set "OPT=SUFFIX" & goto :value)
 if /i "%~1"=="--root" (set "OPT=ROOT" & goto :value)
-if /i "%~1"=="--jobs" (set "OPT=JOBS" & goto :value)
+if /i "%~1"=="--jobs" (set "OPT=JOBS" & set "JOBS_USER=1" & goto :value)
 if /i "%~1"=="--codec-ffmpeg" (set "OPT=CODEC_FFMPEG" & goto :value)
 echo unknown option: %~1 - see --help
 exit /b 1
@@ -76,6 +77,7 @@ echo GPU: %GPU_NAME% - %GPU_NOTE%
 exit /b 0
 :build
 call :longpath_check
+call :size_jobs
 if defined MISS (echo [vk-build] ERROR: %TARGET%: missing:%MISS:~0,-1% - see --help & exit /b 1)
 if not exist "%ROOT%" mkdir "%ROOT%"
 for %%r in ("%ROOT%") do set "ROOT=%%~fr"
@@ -135,7 +137,7 @@ echo   --torchcodec VER        default: %CODEC%                                 
 echo   --py "3.10 3.12"        Python versions from uv, one full torch build each            [PYS]     default: %PYS%
 echo   --suffix TAG            local version tag, e.g. %TORCH%+%SUFFIX%                         [SUFFIX]  default: %SUFFIX%
 echo   --root DIR              sources, venvs and wheels                                     [ROOT]    default: .\pytorch-vulkan
-echo   --jobs N                parallel compile jobs, ~2 GB RAM each                         [JOBS]    default: %JOBS%
+echo   --jobs N                parallel compile jobs, ~3 GB RAM each with MSVC              [JOBS]    default: CPU threads, capped by RAM
 echo   --clean                 git clean the checkouts first - do it when changing versions  [CLEAN=1]
 echo   --codec-ffmpeg MODE     torchcodec FFmpeg: auto, s3 - PyTorch's LGPL builds, x64 only, [CODEC_FFMPEG] default: auto
 echo                           local - pkg-config, redistributable only if that FFmpeg is LGPL
@@ -233,6 +235,20 @@ echo [vk-build] WARNING: Windows long paths are off. git copes on its own, but t
 echo [vk-build]          hit the 260-character limit deep inside the torch build. Either enable them once, as admin:
 echo [vk-build]            reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
 echo [vk-build]          or keep the tree short, e.g. --root D:\ptv
+exit /b 0
+:size_jobs
+rem MSVC needs ~3 GB per torch compile job; more jobs than RAM allows ends in C1002 / C1356 / LNK1102
+set "RAM_GB="
+for /f "usebackq delims=" %%m in (`powershell -NoProfile -c "[math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)"`) do set "RAM_GB=%%m"
+if not defined RAM_GB exit /b 0
+set /a "MJ=RAM_GB/3"
+if %MJ% LSS 1 set "MJ=1"
+if defined JOBS_USER goto :sj_user
+if %MJ% LSS %JOBS% set "JOBS=%MJ%"
+echo [vk-build] %JOBS% parallel jobs for %NUMBER_OF_PROCESSORS% CPU threads and %RAM_GB% GB RAM - about 3 GB per MSVC job, --jobs overrides
+exit /b 0
+:sj_user
+if %JOBS% GTR %MJ% echo [vk-build] WARNING: --jobs %JOBS% is more than the %MJ% that %RAM_GB% GB RAM supports at about 3 GB per MSVC job - if cl.exe or link.exe run out of memory, use --jobs %MJ%
 exit /b 0
 :install_on
 if "%INSTALL_VK%"=="1" exit /b 0
@@ -436,6 +452,15 @@ set "USE_VULKAN_SHADERC_RUNTIME=0"
 set "USE_VULKAN_FP16_INFERENCE=0"
 set "USE_VULKAN_RELAXED_PRECISION=0"
 set "BUILD_TEST=0"
+rem link one library at a time: linking torch_cpu.dll alone takes many GB, next to the parallel compiles
+set "CMAKE_JOB_POOLS=vk_link=1"
+set "CMAKE_JOB_POOL_LINK=vk_link"
+if not exist "%SRC%\torch\build\CMakeCache.txt" goto :bt_fresh_ok
+findstr /c:"CMAKE_JOB_POOL_LINK" "%SRC%\torch\build\CMakeCache.txt" >nul && goto :bt_fresh_ok
+rem the existing build tree was configured without the link pool: reconfigure once, objects are kept
+set "CMAKE_FRESH=1"
+echo [vk-build] torch: reconfiguring the existing build once to serialize links - compiled objects are kept
+:bt_fresh_ok
 set "PYTORCH_BUILD_VERSION=%TORCH%+%SUFFIX%"
 set "PYTORCH_BUILD_NUMBER=1"
 call :pip_wheel torch || (endlocal & exit /b 1)

@@ -96,7 +96,7 @@ The two scripts share every option. Each option can also be set with the environ
 | `--py "3.10 3.12"` | `PYS` | `3.12` | Python versions; each one is a full torch build |
 | `--suffix TAG` | `SUFFIX` | `vulkan` | Local version tag: `2.11.0+vulkan` |
 | `--root DIR` | `ROOT` | `./pytorch-vulkan` | Sources, tools, venvs and wheels |
-| `--jobs N` | `JOBS` | CPU count | Parallel compile jobs, about 2 GB of RAM each |
+| `--jobs N` | `JOBS` | CPU threads, capped by RAM | Parallel compile jobs: about 2 GB of RAM each, about 3 GB each with MSVC |
 | `--clean` | `CLEAN=1` | | `git clean` the checkouts first; do this when changing versions |
 | `--codec-ffmpeg MODE` | `CODEC_FFMPEG` | `auto` | Where torchcodec's FFmpeg comes from, see [torchcodec and FFmpeg](#torchcodec-and-ffmpeg) |
 | `--no-bundle` | `NO_BUNDLE=1` | | Don't put the Vulkan loader (macOS: plus MoltenVK) into the torch wheel |
@@ -243,6 +243,7 @@ Each one is applied only where needed. Where a source file is patched, it is res
 | `find_package(pybind11)` can't see pip's pybind11 | all | `pybind11_ROOT` and `CMAKE_PREFIX_PATH` set from `python -m pybind11 --cmakedir` |
 | `Python3_LIBRARY` NOTFOUND: manylinux Pythons ship no `libpython`, on purpose | Linux | torchcodec's `find_package(Python3 ... Development)` switched to `Development.Module` for the build |
 | torchcodec refuses to build against a local FFmpeg | `local` mode | `I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1`, with the LGPL warning printed |
+| Linking `torch_cpu` runs out of memory next to parallel compiles | all | links run one at a time (CMake job pool `vk_link=1`); a tree configured before this is reconfigured once with `CMAKE_FRESH=1`, and compiled objects are kept |
 
 ## Troubleshooting
 
@@ -250,6 +251,7 @@ Each one is applied only where needed. Where a source file is patched, it is res
 |---|---|
 | `missing: ...` from `--list` or at start | Install what it names; `--help` lists each requirement |
 | Compiler killed partway through the torch build | Lower `--jobs`; budget about 2 GB of RAM per job |
+| Windows: `C1002 compiler is out of heap space`, `C1356 unable to find mspdbcore.dll` or `LNK1102 out of memory` | All three mean MSVC ran out of memory. The default `--jobs` is now sized at about 3 GB per job, and links run one at a time; if you set `--jobs` yourself, lower it. A system-managed pagefile also helps |
 | `Filename too long`, or odd file-not-found errors on Windows | Enable long paths (see [Windows](#windows)) and use a short `--root`, e.g. `D:\ptv` |
 | `torch X has no aten/src/ATen/native/vulkan` | That torch version no longer contains the Vulkan backend; use an older `--torch` |
 | Build broke after changing versions | Rerun with `--clean` |

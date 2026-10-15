@@ -29,12 +29,14 @@ log(){ echo "[vk-build] $*"; }
 die(){ echo "[vk-build] ERROR: $*" >&2; exit 1; }
 OS="$(uname -s)"
 case "$OS" in
-  Linux) [ -n "$JOBS" ] || JOBS=$(nproc); MEM_GB=$(awk '/MemTotal/{print int($2/1048576)}' /proc/meminfo);;
-  Darwin) [ -n "$JOBS" ] || JOBS=$(sysctl -n hw.ncpu); MEM_GB=$(( $(sysctl -n hw.memsize) / 1073741824 ));;
+  Linux) CPUS=$(nproc); MEM_GB=$(awk '/MemTotal/{print int($2/1048576)}' /proc/meminfo);;
+  Darwin) CPUS=$(sysctl -n hw.ncpu); MEM_GB=$(( $(sysctl -n hw.memsize) / 1073741824 ));;
   *) die "unsupported system $OS - on Windows use build-torch-vulkan.cmd";;
 esac
 HOST_ARCH="$(uname -m)"
 if [ "$OS" = Linux ] && [ "$HOST_ARCH" = arm64 ]; then HOST_ARCH=aarch64; fi
+JOBS_USER=0
+if [ -n "$JOBS" ]; then JOBS_USER=1; else JOBS=$CPUS; MJ=$((MEM_GB / 2)); [ "$MJ" -ge 1 ] || MJ=1; [ "$MJ" -ge "$JOBS" ] || JOBS=$MJ; fi
 usage(){
 cat <<EOF
 Usage: ./build-torch-vulkan.sh [options]
@@ -58,7 +60,7 @@ Options                                                                         
   --py "3.10 3.12"        Python versions, one full torch build each                       [PYS]     default: $PYS
   --suffix TAG            local version tag, e.g. $TORCH+$SUFFIX                           [SUFFIX]  default: $SUFFIX
   --root DIR              sources, build tools, venvs and wheels                           [ROOT]    default: ./pytorch-vulkan
-  --jobs N                parallel compile jobs, ~2 GB RAM each                            [JOBS]    default: $JOBS
+  --jobs N                parallel compile jobs, ~2 GB RAM each                            [JOBS]    default: $JOBS (CPU threads, capped by RAM)
   --clean                 git clean the checkouts first (do it when changing versions)     [CLEAN=1]
   --codec-ffmpeg MODE     torchcodec FFmpeg: auto, s3 (PyTorch's LGPL builds, all majors), [CODEC_FFMPEG] default: auto
                           local (pkg-config; the wheel is only redistributable if that FFmpeg is LGPL)
@@ -106,7 +108,7 @@ while [ $# -gt 0 ]; do
     --py) need "$@"; PYS="$2"; shift;;
     --suffix) need "$@"; SUFFIX="$2"; shift;;
     --root) need "$@"; ROOT="$2"; shift;;
-    --jobs) need "$@"; JOBS="$2"; shift;;
+    --jobs) need "$@"; JOBS="$2"; JOBS_USER=1; shift;;
     --codec-ffmpeg) need "$@"; CODEC_FFMPEG="$2"; shift;;
     --macos-min) need "$@"; MACOS_MIN="$2"; shift;;
     --clean) CLEAN=1;;
@@ -336,6 +338,10 @@ build_torch(){
     # USE_VULKAN_WRAPPER is Android-only in torch: desktop builds always link the Vulkan loader, hence the bundling
     export USE_VULKAN=1 USE_VULKAN_WRAPPER=0 USE_VULKAN_SHADERC_RUNTIME=0 USE_VULKAN_FP16_INFERENCE=0 USE_VULKAN_RELAXED_PRECISION=0
     export BUILD_TEST=0 PYTORCH_BUILD_VERSION="$TORCH+$SUFFIX" PYTORCH_BUILD_NUMBER=1
+    # link one library at a time: linking libtorch_cpu alone takes many GB next to the parallel compiles;
+    # a build tree configured before this gets one reconfigure (compiled objects are kept)
+    export CMAKE_JOB_POOLS="vk_link=1" CMAKE_JOB_POOL_LINK=vk_link
+    if [ -f "$SRC/torch/build/CMakeCache.txt" ] && ! grep -q CMAKE_JOB_POOL_LINK "$SRC/torch/build/CMakeCache.txt"; then export CMAKE_FRESH=1; fi
     pip_wheel torch
     echo "$WHL" > "$DIST/.whl"
   )
