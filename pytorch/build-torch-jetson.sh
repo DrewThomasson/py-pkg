@@ -89,9 +89,16 @@ build(){
 	if test -n "$CODEC_VER";then
 		cd "$REPOS/torchcodec"
 		pip install pybind11
-		# a Linux extension takes its Python symbols from the interpreter: headers only (uv's CPython may ship no libpython)
 		git checkout -q -- src/torchcodec/_core/CMakeLists.txt src/torchcodec/_core/fetch_and_expose_non_gpl_ffmpeg_libs.cmake
-		sed -i 's/COMPONENTS Development)/COMPONENTS Development.Module)/' src/torchcodec/_core/CMakeLists.txt
+		# a previous failed configure leaves NOTFOUND entries in the CMake cache: configure from scratch (cheap)
+		rm -rf build
+		# FindPython3 cannot locate the headers of uv's managed CPython from the venv (Python3_INCLUDE_DIRS NOTFOUND):
+		# hand it the interpreter and its include dir (sysconfig's, else <base_prefix>/include/pythonX.Y), and ask for
+		# Development.Module only, a Linux extension takes its Python symbols from the interpreter (no libpython needed)
+		PY_INC="$(python -c "import os,sys,sysconfig;p=sysconfig.get_paths()['include'];print(p if os.path.isfile(os.path.join(p,'Python.h')) else os.path.join(sys.base_prefix,'include','python%d.%d'%sys.version_info[:2]))")"
+		test -f "$PY_INC/Python.h"||{ echo "no Python.h for $(python -V) in $PY_INC";exit 1;}
+		sed -i "s|find_package(Python3 \${PYTHON_VERSION} EXACT COMPONENTS Development)|set(Python3_EXECUTABLE \"$(command -v python)\")\nset(Python3_INCLUDE_DIR \"$PY_INC\")\nfind_package(Python3 \${PYTHON_VERSION} EXACT COMPONENTS Development.Module)|" src/torchcodec/_core/CMakeLists.txt
+		grep -q 'set(Python3_INCLUDE_DIR' src/torchcodec/_core/CMakeLists.txt||{ echo "torchcodec CMakeLists.txt: find_package(Python3 ...) line not found, patch not applied";exit 1;}
 		# torchcodec < 0.10 fetches the x86_64 FFmpeg on any Linux: take 0.10's fetch file, identical but for its
 		# linux_aarch64 branch (same 2025-03-14 S3 set, own sha256s)
 		if ! grep -q linux_aarch64 src/torchcodec/_core/fetch_and_expose_non_gpl_ffmpeg_libs.cmake;then
