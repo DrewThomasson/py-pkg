@@ -26,7 +26,7 @@ The op probe at the end of each build shows what works on a given GPU. Treat the
 | `linux-x86_64-vulkan` | Linux x86_64 | manylinux_2_28 container |
 | `linux-aarch64-vulkan` | Linux aarch64 | manylinux_2_28 container |
 | `linux-aarch64-vulkan-qemu` | Linux x86_64 | manylinux_2_28 aarch64 container under QEMU, roughly 10–20× slower (a day or more); built only when named with `--only` |
-| `macos-x86_64-vulkan` | Intel Mac | native, Vulkan through MoltenVK. PyTorch has not supported Intel Macs since 2.2.2, so expect build fixes |
+| `macos-x86_64-vulkan` | Intel Mac | native, Vulkan through MoltenVK. PyTorch's last official Intel macOS wheel is 2.2.2, so this build is the only current torch there |
 | `macos-arm64-vulkan` | Apple Silicon Mac | native, Vulkan through MoltenVK; MPS stays enabled too |
 | `windows-x64-vulkan` | Windows x64 | native, MSVC |
 | `windows-arm64-vulkan` | Windows on ARM | native, MSVC |
@@ -42,7 +42,7 @@ Builds are native only, with no cross-compiling. Torch's build compiles helper p
 ```
 chmod +x build-torch-vulkan.sh
 ./build-torch-vulkan.sh --list
-./build-torch-vulkan.sh
+./build-torch-vulkan.sh --torch=2.14.1 --torchcodec=0.17.0
 ```
 
 You need Docker and network access. Docker runs directly as root, or through `sudo` otherwise. Everything else is built inside the container. The Vulkan headers, loader and `glslc` are compiled once per architecture and cached.
@@ -52,8 +52,10 @@ You need Docker and network access. Docker runs directly as root, or through `su
 ```
 chmod +x build-torch-vulkan.sh
 ./build-torch-vulkan.sh --list
-./build-torch-vulkan.sh
+./build-torch-vulkan.sh --torch=2.14.1 --torchcodec=0.17.0
 ```
+
+**Apple Silicon: run it from a native arm64 terminal.** The script stops when its shell runs under Rosetta, because the build would target x86_64 instead of arm64. Check with `uname -m`: it must print `arm64`. If it prints `x86_64`, open Terminal's Get Info in Finder (Applications → Utilities → Terminal) and untick "Open using Rosetta", or start a native shell with `arch -arm64 /bin/zsh`. Homebrew must be the native one in `/opt/homebrew` too.
 
 You need the Xcode Command Line Tools (`xcode-select --install`), git and curl. When none is found in `~/VulkanSDK`, the script installs the LunarG Vulkan SDK there, checksum-verified. The SDK brings MoltenVK, the loader and `glslc`.
 
@@ -64,7 +66,7 @@ You need the Xcode Command Line Tools (`xcode-select --install`), git and curl. 
 
 ```
 build-torch-vulkan.cmd --list
-build-torch-vulkan.cmd
+build-torch-vulkan.cmd --torch=2.14.1 --torchcodec=0.17.0
 ```
 
 Any command prompt works. The script finds Visual Studio 2022, or its Build Tools, with `vswhere` and loads the C++ environment for this machine itself. If they aren't installed, add `--install-buildtools`, which installs them through winget; it needs several GB and shows a UAC prompt. The LunarG Vulkan SDK is installed into `%LOCALAPPDATA%\VulkanSDK` when missing.
@@ -72,7 +74,7 @@ Any command prompt works. The script finds Visual Studio 2022, or its Build Tool
 Keep the tree short, because torch's sources and build paths go past Windows' 260-character limit:
 
 ```
-build-torch-vulkan.cmd --root D:\ptv
+build-torch-vulkan.cmd --torch=2.14.1 --torchcodec=0.17.0 --root=D:\ptv
 ```
 
 Also enable long paths once, from an admin prompt. The script warns when they're off.
@@ -83,21 +85,24 @@ reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t 
 
 ## Options
 
-The two scripts share every option. Each option can also be set with the environment variable in brackets.
+The two scripts share every option. Each option can also be set with the environment variable in brackets. Options taking a value accept both `--option=VALUE` and `--option VALUE`.
+
+**torch and torchcodec have no built-in version: name them on every run.** `--torch` is always required, because torchaudio and torchcodec build against that torch wheel. `--torchcodec` is required whenever torchcodec is in `--pkgs`. `--list` and `--help` need neither.
 
 | Option | Env | Default | Meaning |
 |---|---|---|---|
 | `-l`, `--list` | | | Show what this machine can build now, and the GPU status where the install job is on |
 | `--only "T1 T2"` | `ONLY` | all ready targets | Build only these targets (`.sh` only) |
 | `--pkgs "torch ..."` | `PKGS` | `torch torchaudio torchcodec` | Packages to build |
-| `--torch VER` | `TORCH` | `2.11.0` | torch version (git tag `v<VER>`) |
-| `--torchaudio VER` | `AUDIO` | `2.11.0` | torchaudio version |
-| `--torchcodec VER` | `CODEC` | `0.17.0` | torchcodec version; 0.12 and later work with every torch from 2.11 on |
+| `--torch=VER` | `TORCH` | required | torch version to build (git tag `v<VER>`), e.g. `2.14.1`; the Vulkan backend is still in the tree up to 2.14.1 |
+| `--torchaudio=VER` | `AUDIO` | `2.11.0` | torchaudio version; 2.11.0 is the last release and, being built on torch's stable ABI, works with every torch from 2.11 on |
+| `--torchcodec=VER` | `CODEC` | required with torchcodec | torchcodec version to build, e.g. `0.17.0`; 0.12 and later work with every torch from 2.11 on |
 | `--py "3.10 3.12"` | `PYS` | `3.12` | Python versions; each one is a full torch build |
-| `--suffix TAG` | `SUFFIX` | `vulkan` | Local version tag: `2.11.0+vulkan` |
+| `--suffix TAG` | `SUFFIX` | `vulkan` | Local version tag: `2.14.1+vulkan` |
 | `--root DIR` | `ROOT` | `./pytorch-vulkan` | Sources, tools, venvs and wheels |
 | `--jobs N` | `JOBS` | CPU threads, capped by RAM | Parallel compile jobs: about 2 GB of RAM each; on Windows (RAM − 8 GB kept for linking) ÷ 3 GB per MSVC job |
-| `--clean` | `CLEAN=1` | | `git clean` the checkouts first; do this when changing versions |
+| `--clean` | `CLEAN=1` | | Reset and `git clean` the checkouts first |
+| `--force` | `FORCE=1` | | Rebuild a package even when its wheel for this version, suffix and Python is already in `dist/`. By default such a package is skipped entirely, with no sync and no build, and its wheel is installed into the build venv for the packages after it |
 | `--codec-ffmpeg MODE` | `CODEC_FFMPEG` | `auto` | Where torchcodec's FFmpeg comes from, see [torchcodec and FFmpeg](#torchcodec-and-ffmpeg) |
 | `--no-bundle` | `NO_BUNDLE=1` | | Don't put the Vulkan loader (macOS: plus MoltenVK) into the torch wheel |
 | `--no-install-sdk` | `INSTALL_SDK=0` | installs it | Don't install the LunarG SDK when it's missing (macOS, Windows) |
@@ -112,10 +117,11 @@ The two scripts share every option. Each option can also be set with the environ
 ### Examples
 
 ```
-./build-torch-vulkan.sh --py "3.10 3.12" --jobs 8
-./build-torch-vulkan.sh --only linux-aarch64-vulkan-qemu --jobs 16
-./build-torch-vulkan.sh --pkgs "torchaudio torchcodec"     # reuse the torch wheel already in dist/
-build-torch-vulkan.cmd --root D:\ptv --jobs 12
+./build-torch-vulkan.sh --torch=2.14.1 --torchcodec=0.17.0 --py="3.10 3.12" --jobs=8
+./build-torch-vulkan.sh --torch=2.14.1 --torchcodec=0.17.0 --only=linux-aarch64-vulkan-qemu --jobs=16
+./build-torch-vulkan.sh --torch=2.14.1 --pkgs=torch                                   # torch only
+./build-torch-vulkan.sh --torch=2.14.1 --torchcodec=0.17.0 --pkgs="torchaudio torchcodec"   # reuse the torch wheel in dist/
+build-torch-vulkan.cmd --torch=2.14.1 --torchcodec=0.17.0 --root=D:\ptv --jobs=12
 ```
 
 ## What a run does
@@ -130,22 +136,22 @@ build-torch-vulkan.cmd --root D:\ptv --jobs 12
    - **macOS and Windows:** it uses the LunarG SDK, installing it if missing.
    - **Python:** uv provides it, installed if missing. On Linux it comes from the manylinux image's `/opt/python`.
 3. **Syncs the sources.** It clones or updates pytorch, audio and torchcodec in `<root>/src-<target>` and checks out the `v<version>` tags with all submodules. On Windows, git's long-path support is switched on for every repository.
-4. **Builds torch** with `USE_VULKAN=1`, CUDA/ROCm/XPU off, and the version set to `<ver>+<suffix>`. It first checks that the torch tag still contains the Vulkan backend.
+4. **Builds torch** with `USE_VULKAN=1`, CUDA/ROCm/XPU off, and the version set to `<ver>+<suffix>`. It first checks that the torch tag still contains the Vulkan backend. On x86_64 it installs pip's `mkl-static` and `mkl-include` first, so torch uses MKL for BLAS and FFT like the official wheels; without it, torch falls back to Eigen's BLAS and its CPU matrix multiplies are much slower. Apple Silicon uses Accelerate. The probe prints which one a wheel uses (`cpu blas: ...`).
 5. **Bundles the Vulkan loader** into the torch wheel (see [Vulkan loader bundling](#vulkan-loader-bundling)). On Linux the wheels are then retagged `manylinux_2_28_<arch>`.
 6. **Builds torchaudio, then torchcodec,** against the new torch, then installs each wheel into the build venv.
 7. **Runs the op probe** for each Python version.
 8. **Runs the Vulkan install job** where enabled (see [Vulkan install job](#vulkan-install-job)). On Linux this ends with a second probe on the host's own GPU.
 
-Checkouts and build trees are kept, so a rerun after a failure picks up where it stopped. Use `--clean` when you change versions.
+Checkouts and build trees are kept, so a rerun after a failure picks up where it stopped. Packages whose wheel is already in `dist/` are skipped. A torch build tree from another torch version is detected (`build/.vk_tag`) and started over automatically.
 
 ## Output
 
 ```
 <root>/
   dist/<target>/
-    torch-2.11.0+vulkan-cp312-cp312-manylinux_2_28_x86_64.whl    (Linux)
-    torch-2.11.0+vulkan-cp312-cp312-macosx_11_0_arm64.whl        (macOS)
-    torch-2.11.0+vulkan-cp312-cp312-win_amd64.whl                (Windows)
+    torch-2.14.1+vulkan-cp312-cp312-manylinux_2_28_x86_64.whl    (Linux)
+    torch-2.14.1+vulkan-cp312-cp312-macosx_11_0_arm64.whl        (macOS)
+    torch-2.14.1+vulkan-cp312-cp312-win_amd64.whl                (Windows)
     torchaudio-2.11.0+vulkan-...whl
     torchcodec-0.17.0+vulkan-...whl
   src-<target>/{torch,torchaudio,torchcodec}    git checkouts and build trees
@@ -154,7 +160,7 @@ Checkouts and build trees are kept, so a rerun after a failure picks up where it
   tools/vulkanrt-<arch>/                        Windows: vulkan-1.dll fetched for bundling, if needed
 ```
 
-Install the wheels with `pip install torch-2.11.0+vulkan-...whl torchaudio-...whl torchcodec-...whl`.
+Install the wheels with `pip install torch-2.14.1+vulkan-...whl torchaudio-...whl torchcodec-...whl`.
 
 ## Vulkan loader bundling
 
@@ -239,7 +245,7 @@ Packages come from apt, dnf or pacman, through `sudo` when not root. `vulkaninfo
 Each build ends with:
 
 ```
-torch 2.11.0+vulkan vulkan_available True
+torch 2.14.1+vulkan vulkan_available True
 torchaudio 2.11.0+vulkan
 torchcodec 0.17.0+vulkan
   softmax      OK
@@ -267,6 +273,7 @@ Each one is applied only where needed. Where a source file is patched, it is res
 | CMake picks another Python (e.g. Homebrew's framework 3.14) instead of the build venv's | all | `VIRTUAL_ENV` exported for the build venv; CMake's FindPython checks it first |
 | `Unsupported libavcodec version` (FFmpeg newer than torchcodec supports) | `local` mode | supported majors read from the checkout; Homebrew `ffmpeg@N` kegs tried |
 | torchcodec linked the build machine's `libpython` by absolute path | macOS | `Development.Module` plus `-undefined dynamic_lookup`: Python symbols come from the running interpreter |
+| torch built from source has no BLAS library and falls back to Eigen's (`USE_MKL=OFF, USE_EIGEN_FOR_BLAS=ON`) | x86_64 | pip's `mkl-static`/`mkl-include` installed into the build venv, its prefix on `CMAKE_PREFIX_PATH` (`<venv>\Library` on Windows); Linux links MKL's GNU-OpenMP threading like torch, Windows and macOS the sequential MKL so no Intel OpenMP runtime is needed. The first build with MKL reconfigures and recompiles much of ATen |
 | torch dylibs keep an rpath into the Vulkan SDK, so the SDK's loader shadows the bundled one | macOS | rpaths into `$VULKAN_SDK` are deleted during bundling, then the dylibs are re-signed |
 | `Python3_LIBRARY` NOTFOUND: manylinux Pythons ship no `libpython`, on purpose | Linux | torchcodec's `find_package(Python3 ... Development ...)` switched to `Development.Module` for the build (0.17 itself already avoids linking libpython through `pybind11::module`) |
 | torchcodec 0.12+ builds with scikit-build-core and requires its image-decoder libraries | all | `scikit-build-core` installed into the build venv; `TORCHCODEC_BUILD_IMAGE=0` by default |
@@ -283,6 +290,7 @@ Each one is applied only where needed. Where a source file is patched, it is res
 | `Filename too long`, or odd file-not-found errors on Windows | Enable long paths (see [Windows](#windows)) and use a short `--root`, e.g. `D:\ptv` |
 | `torch X has no aten/src/ATen/native/vulkan` | That torch version no longer contains the Vulkan backend; use an older `--torch` |
 | Build broke after changing versions | Rerun with `--clean` |
+| `cpu blas: Eigen (slow)` in the probe | The wheel was built without MKL (an older build, or MKL not installable); rebuild torch with the current script |
 | `vulkan_available False` in the probe | No Vulkan driver on that machine; run `--list` on arm64 hosts to see the GPU status |
 | torchcodec skipped | No prebuilt FFmpeg for this target; install a local one (see [torchcodec and FFmpeg](#torchcodec-and-ffmpeg)) |
 | `torchcodec not available: Could not load libtorchcodec` | No runtime FFmpeg of a supported major where it's used (see [FFmpeg at runtime](#ffmpeg-at-runtime)); the probe prints the full list of tried versions |
@@ -293,7 +301,7 @@ Each one is applied only where needed. Where a source file is patched, it is res
 |---|---|
 | Linux x86_64 | Builds end to end: torch, torchaudio, torchcodec, manylinux_2_28 |
 | Windows x64 | Builds end to end on an 11 GB machine with a 32 GB pagefile: torch, torchaudio, torchcodec |
-| macOS x86_64 | Builds end to end; torch and torchcodec wheels need the rebuild with the libpython / SDK-rpath fixes before publishing |
+| macOS x86_64 | Builds end to end: torch, torchaudio, torchcodec 0.17 |
 | Linux aarch64, QEMU, macOS arm64, Windows arm64 | Written to the same pattern; first real runs pending |
 
 Untested parts:

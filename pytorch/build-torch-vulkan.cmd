@@ -4,9 +4,7 @@ rem Runs from any command prompt: it loads the Visual Studio C++ environment for
 rem Linux and macOS: build-torch-vulkan.sh. build-torch-vulkan.cmd --help for the options, --list for this machine.
 setlocal EnableExtensions DisableDelayedExpansion
 if not defined ROOT set "ROOT=%CD%\pytorch-vulkan"
-if not defined TORCH set "TORCH=2.11.0"
 if not defined AUDIO set "AUDIO=2.11.0"
-if not defined CODEC set "CODEC=0.17.0"
 if not defined SUFFIX set "SUFFIX=vulkan"
 if not defined PYS set "PYS=3.12"
 if not defined PKGS set "PKGS=torch torchaudio torchcodec"
@@ -19,6 +17,7 @@ if not defined INSTALL_VK set "INSTALL_VK=auto"
 if not defined INSTALL_SDK set "INSTALL_SDK=1"
 if not defined INSTALL_BT set "INSTALL_BT=0"
 if not defined INSTALL_FFMPEG set "INSTALL_FFMPEG=1"
+if not defined FORCE set "FORCE=0"
 set "GPU_OK=unknown"
 set "LIST=0"
 :args
@@ -26,6 +25,7 @@ if "%~1"=="" goto :args_done
 if /i "%~1"=="-l" (set "LIST=1" & shift & goto :args)
 if /i "%~1"=="--list" (set "LIST=1" & shift & goto :args)
 if /i "%~1"=="--clean" (set "CLEAN=1" & shift & goto :args)
+if /i "%~1"=="--force" (set "FORCE=1" & shift & goto :args)
 if /i "%~1"=="--no-bundle" (set "NO_BUNDLE=1" & shift & goto :args)
 if /i "%~1"=="--install-vulkan" (set "INSTALL_VK=1" & shift & goto :args)
 if /i "%~1"=="--no-install-vulkan" (set "INSTALL_VK=0" & shift & goto :args)
@@ -78,6 +78,10 @@ call :gpu_check
 echo GPU: %GPU_NAME% - %GPU_NOTE%
 exit /b 0
 :build
+rem torch's version is needed on every build - torchaudio and torchcodec build against that torch wheel - and
+rem torchcodec's only when it is built; --list needs neither
+if not defined TORCH (echo [vk-build] ERROR: --torch=VER is required, e.g. --torch=2.14.1 - see --help & exit /b 1)
+call :want torchcodec && if not defined CODEC (echo [vk-build] ERROR: --torchcodec=VER is required when torchcodec is built, e.g. --torchcodec=0.17.0, or leave it out of --pkgs & exit /b 1)
 call :longpath_check
 call :size_jobs
 if defined MISS (echo [vk-build] ERROR: %TARGET%: missing:%MISS:~0,-1% - see --help & exit /b 1)
@@ -126,22 +130,27 @@ for %%w in (%BUILT%) do echo [vk-build]   %%w
 exit /b 0
 rem ---------------------------------------------------------------- subroutines
 :usage
-echo Usage: build-torch-vulkan.cmd [options]
+echo Usage: build-torch-vulkan.cmd --torch=VER --torchcodec=VER [options]
 echo Builds torch, torchaudio and torchcodec wheels with the PyTorch Vulkan backend for this Windows machine
 echo - windows-x64-vulkan or windows-arm64-vulkan. The torch wheel carries vulkan-1.dll, so it imports on machines
 echo without a Vulkan runtime - Vulkan is then simply unavailable. Linux and macOS: build-torch-vulkan.sh.
+echo Versions - no built-in default for torch and torchcodec: name them on every run           [env]
+echo   --torch=VER             torch to build, e.g. 2.14.1 - the Vulkan backend is in the tree up to 2.14.1   [TORCH]
+echo   --torchcodec=VER        torchcodec to build, e.g. 0.17.0 - 0.12+ works with every torch 2.11+           [CODEC]
+echo                           only required when torchcodec is in --pkgs
+echo   --torchaudio=VER        default: %AUDIO%, the last release - stable ABI, any torch 2.11+              [AUDIO]
+echo Options taking a value accept both --option=VALUE and --option VALUE
 echo Options                                                                                [env]
 echo   -l, --list              what this machine can build now
 echo   --pkgs "torch ..."      packages to build                                            [PKGS]    default: %PKGS%
-echo   --torch VER             default: %TORCH%                                               [TORCH]
-echo   --torchaudio VER        default: %AUDIO%                                               [AUDIO]
-echo   --torchcodec VER        default: %CODEC%, 0.12+ works with every torch 2.11 or newer   [CODEC]
 echo   --py "3.10 3.12"        Python versions from uv, one full torch build each            [PYS]     default: %PYS%
-echo   --suffix TAG            local version tag, e.g. %TORCH%+%SUFFIX%                         [SUFFIX]  default: %SUFFIX%
+echo   --suffix TAG            local version tag, e.g. 2.14.1+%SUFFIX%                         [SUFFIX]  default: %SUFFIX%
 echo   --root DIR              sources, venvs and wheels                                     [ROOT]    default: .\pytorch-vulkan
 echo   --jobs N                parallel compile jobs, ~3 GB RAM each with MSVC              [JOBS]    default: CPU threads, capped by RAM
 echo                           RAM minus 8 GB for linking, divided by 3 GB; a failed torch build resumes once with 1 job
 echo   --clean                 git clean the checkouts first - do it when changing versions  [CLEAN=1]
+echo   --force                 rebuild packages whose wheel is already in dist               [FORCE=1]
+echo                           default: a package whose wheel for this version and Python is in dist is skipped
 echo   --codec-ffmpeg MODE     torchcodec FFmpeg: auto, s3 - PyTorch's LGPL builds, x64 only, [CODEC_FFMPEG] default: auto
 echo                           local - pkg-config, redistributable only if that FFmpeg is LGPL
 echo                           auto = s3 on x64, local on arm64 if pkg-config finds it, else torchcodec is skipped
@@ -169,9 +178,10 @@ echo   Vulkan on Windows arm64: Snapdragon X has a native Qualcomm driver; older
 echo   OpenCL, OpenGL, and Vulkan Compatibility Pack from the Microsoft Store
 echo Examples
 echo   build-torch-vulkan.cmd --list
-echo   build-torch-vulkan.cmd
-echo   build-torch-vulkan.cmd --py "3.10 3.12" --jobs 8
-echo   build-torch-vulkan.cmd --pkgs "torchaudio torchcodec"
+echo   build-torch-vulkan.cmd --torch=2.14.1 --torchcodec=0.17.0
+echo   build-torch-vulkan.cmd --torch=2.14.1 --torchcodec=0.17.0 --py="3.10 3.12" --jobs=8
+echo   build-torch-vulkan.cmd --torch=2.14.1 --pkgs=torch
+echo   build-torch-vulkan.cmd --torch=2.14.1 --torchcodec=0.17.0 --pkgs="torchaudio torchcodec"
 exit /b 0
 :want
 echo %PKGS% | findstr /i /r /c:"\<%~1\>" >nul
@@ -223,18 +233,51 @@ set "PATH=%VENV%\Scripts;%BASEPATH%"
 rem CMake's FindPython checks VIRTUAL_ENV before registry-installed Pythons
 set "VIRTUAL_ENV=%VENV%"
 "%PY%" -m pip install -q cmake ninja setuptools wheel || exit /b 1
-call :want torch && (call :sync_repo torch https://github.com/pytorch/pytorch.git %TORCH% || exit /b 1)
-call :want torchaudio && (call :sync_repo torchaudio https://github.com/pytorch/audio.git %AUDIO% || exit /b 1)
-call :want torchcodec && (call :sync_repo torchcodec https://github.com/pytorch/torchcodec.git %CODEC% || exit /b 1)
-call :want torch && goto :bp_torch
-call :install_existing_torch || exit /b 1
-goto :bp_rest
-:bp_torch
+rem a package whose wheel for this version, suffix and Python is already in dist is skipped: no sync, no build
+call :built_whl torch %TORCH%
+set "TW=%BW%"
+call :built_whl torchaudio %AUDIO%
+set "AW=%BW%"
+call :built_whl torchcodec %CODEC%
+set "CW=%BW%"
+call :want torch && if not defined TW (call :sync_repo torch https://github.com/pytorch/pytorch.git %TORCH% || exit /b 1)
+call :want torchaudio && if not defined AW (call :sync_repo torchaudio https://github.com/pytorch/audio.git %AUDIO% || exit /b 1)
+call :want torchcodec && if not defined CW (call :sync_repo torchcodec https://github.com/pytorch/torchcodec.git %CODEC% || exit /b 1)
+call :want torch || goto :bp_notorch
+if defined TW goto :bp_torch_skip
 call :build_torch || exit /b 1
-:bp_rest
-call :want torchaudio && (call :build_torchaudio || exit /b 1)
-call :want torchcodec && (call :build_torchcodec || exit /b 1)
-call :want torchcodec && call :runtime_ffmpeg
+goto :bp_audio
+:bp_torch_skip
+echo [vk-build] torch %TORCH%+%SUFFIX% %TAG% already built, skipped: %TW%
+set "WHL=%TW%"
+"%PY%" -m pip install -q "%WHL%" || exit /b 1
+set "BUILT=%BUILT% %WHL%"
+goto :bp_audio
+:bp_notorch
+call :install_existing_torch || exit /b 1
+:bp_audio
+call :want torchaudio || goto :bp_codec
+if defined AW goto :bp_audio_skip
+call :build_torchaudio || exit /b 1
+goto :bp_codec
+:bp_audio_skip
+echo [vk-build] torchaudio %AUDIO%+%SUFFIX% %TAG% already built, skipped: %AW%
+set "WHL=%AW%"
+call :install_whl || exit /b 1
+set "BUILT=%BUILT% %WHL%"
+:bp_codec
+call :want torchcodec || goto :bp_done
+if defined CW goto :bp_codec_skip
+call :build_torchcodec || exit /b 1
+goto :bp_ffmpeg
+:bp_codec_skip
+echo [vk-build] torchcodec %CODEC%+%SUFFIX% %TAG% already built, skipped: %CW%
+set "WHL=%CW%"
+call :install_whl || exit /b 1
+set "BUILT=%BUILT% %WHL%"
+:bp_ffmpeg
+call :runtime_ffmpeg
+:bp_done
 if "%GPU_OK%"=="0" (echo [vk-build] op probe skipped: no Vulkan driver on this machine) else call :probe
 set "CLEANNOW=1"
 exit /b 0
@@ -490,16 +533,23 @@ git -C "%RP%" -c core.longpaths=true submodule update -q --init --recursive --fo
 git -C "%RP%" -c core.longpaths=true submodule foreach -q --recursive git config core.longpaths true
 exit /b 0
 :pip_wheel
-del /q "%DIST%\%~1-*-%TAG%-*.whl" 2>nul
+rem %1 package, %2 version: only that version's wheel is replaced, other versions in dist are kept
+del /q "%DIST%\%~1-%~2+*-%TAG%-*.whl" "%DIST%\%~1-%~2-%TAG%-*.whl" 2>nul
 pushd "%SRC%\%~1"
 "%PY%" -m pip wheel . --no-build-isolation --no-deps -v -w "%DIST%"
 set "RC=%ERRORLEVEL%"
 popd
 if not "%RC%"=="0" exit /b 1
 set "WHL="
-for %%f in ("%DIST%\%~1-*-%TAG%-*.whl") do set "WHL=%%~ff"
+for %%f in ("%DIST%\%~1-%~2+*-%TAG%-*.whl" "%DIST%\%~1-%~2-%TAG%-*.whl") do set "WHL=%%~ff"
 if not defined WHL (echo [vk-build] ERROR: no %~1 wheel was produced & exit /b 1)
 echo %WHL% | findstr /c:"+%SUFFIX%-" >nul || echo [vk-build] WARNING: %~1 wheel does not carry +%SUFFIX% - the repo ignored the version variable
+exit /b 0
+:built_whl
+rem %1 package, %2 version: BW = the wheel already in dist for this version, suffix and Python; empty if none or --force
+set "BW="
+if "%FORCE%"=="1" exit /b 0
+for %%f in ("%DIST%\%~1-%~2+%SUFFIX%-%TAG%-*.whl") do set "BW=%%~ff"
 exit /b 0
 :install_whl
 "%PY%" -m pip install -q --force-reinstall --no-deps "%WHL%" || exit /b 1
@@ -511,6 +561,14 @@ if not defined WHL (echo [vk-build] ERROR: torch is not in --pkgs and no torch-%
 "%PY%" -m pip install -q "%WHL%" || exit /b 1
 exit /b 0
 :build_torch
+rem a build tree from another torch version (or from before this marker existed) is started over once
+if not exist "%SRC%\torch\build" goto :bt_tree_ok
+set "BT_TAG="
+if exist "%SRC%\torch\build\.vk_tag" set /p BT_TAG=<"%SRC%\torch\build\.vk_tag"
+if "%BT_TAG%"=="%TORCH%" goto :bt_tree_ok
+echo [vk-build] torch: build tree is not from %TORCH% - removing it, full build
+rmdir /s /q "%SRC%\torch\build"
+:bt_tree_ok
 if not exist "%SRC%\torch\aten\src\ATen\native\vulkan" (echo [vk-build] ERROR: torch %TORCH% has no aten\src\ATen\native\vulkan - pick an older --torch & exit /b 1)
 if not exist "%SRC%\torch\requirements-build.txt" goto :bt_req
 "%PY%" -m pip install -q -r "%SRC%\torch\requirements-build.txt" || exit /b 1
@@ -518,6 +576,14 @@ if not exist "%SRC%\torch\requirements-build.txt" goto :bt_req
 if not exist "%SRC%\torch\requirements.txt" goto :bt_env
 "%PY%" -m pip install -q -r "%SRC%\torch\requirements.txt" || exit /b 1
 :bt_env
+rem x64: MKL for BLAS/FFT like the official wheels (without it torch falls back to Eigen's BLAS, much slower matmuls).
+rem pip's mkl-static is linked in statically and sequential, so no Intel OpenMP runtime (libiomp5md.dll) is needed at
+rem import. Enabling it changes torch's config: reconfigure once, recorded by a marker file
+set "MKLON=0"
+if not "%HOSTA%"=="x64" goto :bt_mkl_done
+"%PY%" -m pip install -q mkl-static mkl-include && set "MKLON=1"
+if "%MKLON%"=="0" echo [vk-build] WARNING: MKL not installable here, torch keeps Eigen's slower BLAS
+:bt_mkl_done
 rem torch's Vulkan Clamp.cpp uses M_SQRT2/M_2_SQRTPI, which MSVC's cmath only defines after _USE_MATH_DEFINES;
 rem upstream never builds Vulkan on Windows, so add the define on line 1 for this build and restore the file after
 set "CLAMPG=aten/src/ATen/native/vulkan/ops/Clamp.cpp"
@@ -541,6 +607,15 @@ set "BUILD_TEST=0"
 rem link one library at a time: linking torch_cpu.dll alone takes many GB, next to the parallel compiles
 set "CMAKE_JOB_POOLS=vk_link=1"
 set "CMAKE_JOB_POOL_LINK=vk_link"
+if not "%MKLON%"=="1" goto :bt_mkl_env_done
+rem pip's MKL wheels install into VENV\Library\lib and VENV\Library\include
+set "CMAKE_PREFIX_PATH=%VENV%\Library;%VENV%"
+set "MKL_THREADING=SEQ"
+if not exist "%SRC%\torch\build\CMakeCache.txt" goto :bt_mkl_env_done
+if exist "%SRC%\torch\build\.vk_mkl" goto :bt_mkl_env_done
+set "CMAKE_FRESH=1"
+echo [vk-build] torch: reconfiguring once to build with MKL - this recompiles a large part of ATen
+:bt_mkl_env_done
 if not exist "%SRC%\torch\build\CMakeCache.txt" goto :bt_fresh_ok
 findstr /c:"CMAKE_JOB_POOL_LINK" "%SRC%\torch\build\CMakeCache.txt" >nul && goto :bt_fresh_ok
 rem the existing build tree was configured without the link pool: reconfigure once, objects are kept
@@ -549,16 +624,18 @@ echo [vk-build] torch: reconfiguring the existing build once to serialize links 
 :bt_fresh_ok
 set "PYTORCH_BUILD_VERSION=%TORCH%+%SUFFIX%"
 set "PYTORCH_BUILD_NUMBER=1"
-call :pip_wheel torch && goto :bt_built
+call :pip_wheel torch %TORCH% && goto :bt_built
 if "%JOBS%"=="1" (endlocal & exit /b 1)
 rem out of memory is the usual cause at this size: resume with a single job so the remaining links get the whole machine
 echo [vk-build] torch build failed with %JOBS% jobs - resuming once with 1 job; finished objects are kept, Ctrl+C to stop
 set "MAX_JOBS=1"
 set "CMAKE_BUILD_PARALLEL_LEVEL=1"
 set "CMAKE_FRESH="
-call :pip_wheel torch || (endlocal & exit /b 1)
+call :pip_wheel torch %TORCH% || (endlocal & exit /b 1)
 :bt_built
 endlocal & set "WHL=%WHL%"
+if "%MKLON%"=="1" type nul > "%SRC%\torch\build\.vk_mkl"
+> "%SRC%\torch\build\.vk_tag" echo %TORCH%
 git -C "%SRC%\torch" checkout -q -- %CLAMPG%
 if "%NO_BUNDLE%"=="1" goto :bt_install
 call :bundle || exit /b 1
@@ -585,7 +662,7 @@ setlocal
 set "USE_FFMPEG=0"
 set "BUILD_SOX=0"
 set "BUILD_VERSION=%AUDIO%+%SUFFIX%"
-call :pip_wheel torchaudio || (endlocal & exit /b 1)
+call :pip_wheel torchaudio %AUDIO% || (endlocal & exit /b 1)
 endlocal & set "WHL=%WHL%"
 call :install_whl || exit /b 1
 set "BUILT=%BUILT% %WHL%"
@@ -612,7 +689,7 @@ if /i not "%CMAKE_PREFIX_PATH%"=="%pybind11_ROOT%" set "CMAKE_PREFIX_PATH=%pybin
 if "%CMODE%"=="s3" set "BUILD_AGAINST_ALL_FFMPEG_FROM_S3=1"
 if "%CMODE%"=="local" set "I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1"
 if "%CMODE%"=="local" echo [vk-build] WARNING: torchcodec built against the local FFmpeg - only redistribute it if that FFmpeg is an LGPL build
-call :pip_wheel torchcodec || (endlocal & exit /b 1)
+call :pip_wheel torchcodec %CODEC% || (endlocal & exit /b 1)
 endlocal & set "WHL=%WHL%"
 call :install_whl || exit /b 1
 set "BUILT=%BUILT% %WHL%"
@@ -622,6 +699,8 @@ echo [vk-build] Vulkan op probe for python %V% - FAIL = op not implemented on th
 set "PROBE=%TEMP%\vk_probe_%RANDOM%.py"
 > "%PROBE%" echo(import torch,torch.nn.functional as F
 >>"%PROBE%" echo(print('torch',torch.__version__,'vulkan_available',torch.is_vulkan_available())
+>>"%PROBE%" echo(cfg=torch.__config__.show()
+>>"%PROBE%" echo(print('cpu blas:','MKL' if 'USE_MKL=ON' in cfg else 'Accelerate' if 'accelerate' in cfg.lower() else 'OpenBLAS' if 'openblas' in cfg.lower() else 'Eigen (slow)' if 'USE_EIGEN_FOR_BLAS=ON' in cfg else 'unknown')
 >>"%PROBE%" echo(for mod in ['torchaudio','torchcodec']:
 >>"%PROBE%" echo(    try:
 >>"%PROBE%" echo(        m=__import__(mod)

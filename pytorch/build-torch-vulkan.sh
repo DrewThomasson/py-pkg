@@ -6,9 +6,9 @@
 set -euo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 ROOT="${ROOT:-$PWD/pytorch-vulkan}"
-TORCH="${TORCH:-2.11.0}"
+TORCH="${TORCH:-}"
 AUDIO="${AUDIO:-2.11.0}"
-CODEC="${CODEC:-0.17.0}"
+CODEC="${CODEC:-}"
 SUFFIX="${SUFFIX:-vulkan}"
 PYS="${PYS:-3.12}"
 PKGS="${PKGS:-torch torchaudio torchcodec}"
@@ -24,6 +24,7 @@ MACOS_MIN="${MACOS_MIN:-11.0}"
 INSTALL_VK="${INSTALL_VK:-auto}"
 INSTALL_SDK="${INSTALL_SDK:-1}"
 INSTALL_FFMPEG="${INSTALL_FFMPEG:-1}"
+FORCE="${FORCE:-0}"
 LIST=0
 IN_CONTAINER=""
 log(){ echo "[vk-build] $*"; }
@@ -40,7 +41,7 @@ JOBS_USER=0
 if [ -n "$JOBS" ]; then JOBS_USER=1; else JOBS=$CPUS; MJ=$((MEM_GB / 2)); [ "$MJ" -ge 1 ] || MJ=1; [ "$MJ" -ge "$JOBS" ] || JOBS=$MJ; fi
 usage(){
 cat <<EOF
-Usage: ./build-torch-vulkan.sh [options]
+Usage: ./build-torch-vulkan.sh --torch=VER --torchcodec=VER [options]
 Builds torch, torchaudio and torchcodec wheels with the PyTorch Vulkan backend for the targets this machine can build.
 The torch wheel carries its own Vulkan loader (macOS: plus MoltenVK), so it imports on machines without one; Vulkan is
 then simply unavailable. Using a GPU still needs that GPU's Vulkan driver (Mesa RADV/ANV, NVIDIA, ...) except on macOS.
@@ -49,20 +50,25 @@ Targets
   linux-x86_64-vulkan        on an x86_64 Linux machine, in a manylinux_2_28 container
   linux-aarch64-vulkan       on an aarch64 Linux machine, in a manylinux_2_28 container
   linux-aarch64-vulkan-qemu  on an x86_64 Linux machine through QEMU, ~10-20x slower (a day or more): only built with --only
-  macos-x86_64-vulkan        on an Intel Mac, native (no official torch for Intel Macs after 2.2.2: expect build fixes)
+  macos-x86_64-vulkan        on an Intel Mac, native (PyTorch stopped at 2.2.2 there: this is the only current torch)
   macos-arm64-vulkan         on an Apple Silicon Mac, native (MPS stays enabled too)
-Options                                                                                   [env]
+Versions (no built-in default for torch and torchcodec: name them on every run)
+  --torch=VER             torch to build, e.g. 2.14.1 (the Vulkan backend is in the tree up to 2.14.1)    [TORCH]
+  --torchcodec=VER        torchcodec to build, e.g. 0.17.0 (>= 0.12 works with every torch >= 2.11);       [CODEC]
+                          only required when torchcodec is in --pkgs
+  --torchaudio=VER        default: $AUDIO, the last torchaudio release (stable ABI: any torch >= 2.11)       [AUDIO]
+Options taking a value accept both --option=VALUE and --option VALUE                      [env]
   -l, --list              what this machine can build now
   --only "T1 T2"          build only these targets                                        [ONLY]
   --pkgs "torch ..."      packages to build                                               [PKGS]    default: $PKGS
-  --torch VER             default: $TORCH                                                  [TORCH]
-  --torchaudio VER        default: $AUDIO                                                  [AUDIO]
-  --torchcodec VER        default: $CODEC (>= 0.12 works with every torch >= 2.11)       [CODEC]
   --py "3.10 3.12"        Python versions, one full torch build each                       [PYS]     default: $PYS
-  --suffix TAG            local version tag, e.g. $TORCH+$SUFFIX                           [SUFFIX]  default: $SUFFIX
+  --suffix TAG            local version tag, e.g. 2.14.1+$SUFFIX                           [SUFFIX]  default: $SUFFIX
   --root DIR              sources, build tools, venvs and wheels                           [ROOT]    default: ./pytorch-vulkan
   --jobs N                parallel compile jobs, ~2 GB RAM each                            [JOBS]    default: $JOBS (CPU threads, capped by RAM)
-  --clean                 git clean the checkouts first (do it when changing versions)     [CLEAN=1]
+  --clean                 git clean the checkouts first                                    [CLEAN=1]
+  --force                 rebuild packages whose wheel is already in dist/                 [FORCE=1]
+                          default: a package whose <pkg>-<ver>+<suffix> wheel for this Python is already in
+                          <root>/dist/<target> is skipped (no sync, no build) and that wheel is used
   --codec-ffmpeg MODE     torchcodec FFmpeg: auto, s3 (PyTorch's LGPL builds, all majors), [CODEC_FFMPEG] default: auto
                           local (pkg-config; the wheel is only redistributable if that FFmpeg is LGPL)
                           auto = s3 where it exists (Linux, macOS arm64), else local if found, else torchcodec is skipped
@@ -92,14 +98,17 @@ Needs
   Vulkan install job on Linux: apt, dnf or pacman, through sudo when not root
 Examples
   ./build-torch-vulkan.sh --list
-  ./build-torch-vulkan.sh
-  ./build-torch-vulkan.sh --py "3.10 3.12" --jobs 8
-  ./build-torch-vulkan.sh --only linux-aarch64-vulkan-qemu --jobs 16
-  ./build-torch-vulkan.sh --pkgs "torchaudio torchcodec"
+  ./build-torch-vulkan.sh --torch=2.14.1 --torchcodec=0.17.0
+  ./build-torch-vulkan.sh --torch=2.14.1 --torchcodec=0.17.0 --py="3.10 3.12" --jobs=8
+  ./build-torch-vulkan.sh --torch=2.14.1 --torchcodec=0.17.0 --only=linux-aarch64-vulkan-qemu --jobs=16
+  ./build-torch-vulkan.sh --torch=2.14.1 --pkgs=torch            # torch only, no torchcodec version needed
+  ./build-torch-vulkan.sh --torch=2.14.1 --torchcodec=0.17.0 --pkgs="torchaudio torchcodec"
 EOF
 }
 need(){ [ $# -ge 2 ] || die "$1 needs a value (see --help)"; }
 while [ $# -gt 0 ]; do
+  # --option=value is the same as --option value
+  case "$1" in --*=*) a="$1"; shift; set -- "${a%%=*}" "${a#*=}" "$@";; esac
   case "$1" in
     -l|--list) LIST=1;;
     --only) need "$@"; ONLY="$2"; shift;;
@@ -120,6 +129,7 @@ while [ $# -gt 0 ]; do
     --no-install-vulkan) INSTALL_VK=0;;
     --no-install-sdk) INSTALL_SDK=0;;
     --no-install-ffmpeg) INSTALL_FFMPEG=0;;
+    --force) FORCE=1;;
     --in-container) need "$@"; IN_CONTAINER="$2"; shift;;
     -h|--help) usage; exit 0;;
     *) die "unknown option: $1 (see --help)";;
@@ -129,6 +139,12 @@ done
 case "$CODEC_FFMPEG" in auto|s3|local) ;; *) die "--codec-ffmpeg must be auto, s3 or local";; esac
 for p in $PKGS; do case "$p" in torch|torchaudio|torchcodec) ;; *) die "unknown package $p (torch, torchaudio, torchcodec)";; esac; done
 want(){ case " $PKGS " in *" $1 "*) return 0;; esac; return 1; }
+# torch's version is needed on every build (torchaudio / torchcodec build against that torch wheel), torchcodec's only
+# when it is built; --list needs neither
+if [ "$LIST" != 1 ]; then
+  [ -n "$TORCH" ] || die "--torch=VER is required, e.g. --torch=2.14.1 (see --help)"
+  if want torchcodec && [ -z "$CODEC" ]; then die "--torchcodec=VER is required when torchcodec is built, e.g. --torchcodec=0.17.0 (or leave it out of --pkgs)"; fi
+fi
 macos_sdk(){
   if [ -n "${VULKAN_SDK:-}" ]; then echo "$VULKAN_SDK"; return 0; fi
   ls -d "$HOME"/VulkanSDK/*/macOS 2>/dev/null | sort -V | tail -1 || true
@@ -289,13 +305,13 @@ host_probe(){  # target: install the built wheels into a host venv and run the o
     uv venv -q --seed --python "$V" "$venv"
     PY="$venv/bin/python"
     export VIRTUAL_ENV="$venv"
-    WHL="$(ls "$DIST"/torch-*-"$TAG"-*.whl 2>/dev/null | head -1 || true)"
-    if [ -z "$WHL" ]; then log "no torch $TAG wheel in $DIST to probe"; continue; fi
+    WHL="$(ls -t "$DIST/torch-$TORCH+$SUFFIX-$TAG"-*.whl 2>/dev/null | head -1 || true)"
+    if [ -z "$WHL" ]; then log "no torch $TORCH+$SUFFIX $TAG wheel in $DIST to probe"; continue; fi
     "$PY" -m pip install -q "$WHL"
-    for w in torchaudio torchcodec; do
-      WHL="$(ls "$DIST/$w"-*-"$TAG"-*.whl 2>/dev/null | head -1 || true)"
-      if [ -n "$WHL" ]; then install_whl; fi
-    done
+    WHL="$(ls -t "$DIST/torchaudio-$AUDIO+$SUFFIX-$TAG"-*.whl 2>/dev/null | head -1 || true)"
+    if [ -n "$WHL" ]; then install_whl; fi
+    WHL="$(ls -t "$DIST/torchcodec-$CODEC+$SUFFIX-$TAG"-*.whl 2>/dev/null | head -1 || true)"
+    if [ -n "$WHL" ]; then install_whl; fi
     log "host probe on $GPU_NAME:"
     probe
   done
@@ -317,10 +333,14 @@ sync_repo(){  # name url version clean
   git -C "$path" submodule sync -q --recursive
   git -C "$path" submodule update -q --init --recursive
 }
-pip_wheel(){  # package dir, env already exported by the caller's subshell
-  rm -f "$DIST/$1"-*-"$TAG"-*.whl
+built_whl(){  # package version -> the wheel already in dist/ for this version, suffix and Python ("" if none or --force)
+  if [ "$FORCE" = 1 ]; then return 0; fi
+  ls -t "$DIST/$1-$2+$SUFFIX-$TAG"-*.whl 2>/dev/null | head -1 || true
+}
+pip_wheel(){  # package version; env already exported by the caller's subshell. Other versions in dist/ are kept
+  rm -f "$DIST/$1-$2+"*-"$TAG"-*.whl "$DIST/$1-$2-$TAG"-*.whl
   (cd "$SRC/$1" && "$PY" -m pip wheel . --no-build-isolation --no-deps -v -w "$DIST")
-  WHL="$(ls "$DIST/$1"-*-"$TAG"-*.whl 2>/dev/null | head -1 || true)"
+  WHL="$(ls -t "$DIST/$1"-*-"$TAG"-*.whl 2>/dev/null | head -1 || true)"
   [ -n "$WHL" ] || die "no $1 wheel produced in $DIST"
   case "$WHL" in *"+$SUFFIX-"*) ;; *) log "WARNING: $(basename "$WHL") does not carry +$SUFFIX - the repo ignored the version variable";; esac
 }
@@ -400,11 +420,32 @@ EOF
 }
 build_torch(){
   [ -d "$SRC/torch/aten/src/ATen/native/vulkan" ] || die "torch $TORCH has no aten/src/ATen/native/vulkan - the Vulkan backend is gone from this tree, pick an older --torch"
+  # a build tree from another torch version (or from before this marker existed) is started over once
+  if [ -d "$SRC/torch/build" ] && [ "$(cat "$SRC/torch/build/.vk_tag" 2>/dev/null)" != "$TORCH" ]; then
+    log "torch: build tree is not from $TORCH - removing it, full build"
+    rm -rf "$SRC/torch/build"
+  fi
   local r
   for r in requirements-build.txt requirements.txt; do
     if [ -f "$SRC/torch/$r" ]; then "$PY" -m pip install -q -r "$SRC/torch/$r"; fi
   done
+  # x86_64: MKL for BLAS/FFT like the official wheels (without it torch falls back to Eigen's BLAS, much slower matmuls).
+  # pip's mkl-static links in statically; Linux threads it with GNU OpenMP like torch, macOS uses the sequential MKL
+  # so no Intel OpenMP runtime is needed. Enabling it changes torch's config: reconfigure once (marker file)
+  local mkl=0 pfx
+  case "$TARGET" in
+    *x86_64*) if "$PY" -m pip install -q mkl-static mkl-include; then mkl=1; else log "WARNING: MKL not installable here, torch keeps Eigen's slower BLAS"; fi;;
+  esac
+  pfx="$("$PY" -c 'import sys;print(sys.prefix)')"
   (
+    if [ "$mkl" = 1 ]; then
+      export CMAKE_PREFIX_PATH="$pfx${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+      if [ "$OS" = Darwin ]; then export MKL_THREADING=SEQ; fi
+      if [ -f "$SRC/torch/build/CMakeCache.txt" ] && [ ! -f "$SRC/torch/build/.vk_mkl" ]; then
+        export CMAKE_FRESH=1
+        log "torch: reconfiguring once to build with MKL - this recompiles a large part of ATen"
+      fi
+    fi
     # USE_VULKAN_WRAPPER is Android-only in torch: desktop builds always link the Vulkan loader, hence the bundling
     export USE_VULKAN=1 USE_VULKAN_WRAPPER=0 USE_VULKAN_SHADERC_RUNTIME=0 USE_VULKAN_FP16_INFERENCE=0 USE_VULKAN_RELAXED_PRECISION=0
     export BUILD_TEST=0 PYTORCH_BUILD_VERSION="$TORCH+$SUFFIX" PYTORCH_BUILD_NUMBER=1
@@ -412,9 +453,11 @@ build_torch(){
     # a build tree configured before this gets one reconfigure (compiled objects are kept)
     export CMAKE_JOB_POOLS="vk_link=1" CMAKE_JOB_POOL_LINK=vk_link
     if [ -f "$SRC/torch/build/CMakeCache.txt" ] && ! grep -q CMAKE_JOB_POOL_LINK "$SRC/torch/build/CMakeCache.txt"; then export CMAKE_FRESH=1; fi
-    pip_wheel torch
+    pip_wheel torch "$TORCH"
     echo "$WHL" > "$DIST/.whl"
   )
+  if [ "$mkl" = 1 ]; then touch "$SRC/torch/build/.vk_mkl"; fi
+  echo "$TORCH" > "$SRC/torch/build/.vk_tag"
   WHL="$(cat "$DIST/.whl")"
   if [ "$NO_BUNDLE" != 1 ]; then bundle_vulkan; fi
   retag
@@ -424,7 +467,7 @@ build_torch(){
 build_torchaudio(){
   (
     export USE_FFMPEG=0 BUILD_SOX=0 BUILD_VERSION="$AUDIO+$SUFFIX"
-    pip_wheel torchaudio
+    pip_wheel torchaudio "$AUDIO"
     echo "$WHL" > "$DIST/.whl"
   )
   WHL="$(cat "$DIST/.whl")"
@@ -473,7 +516,7 @@ build_torchcodec(){
       export I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1
       log "WARNING: torchcodec built against the local FFmpeg - only redistribute it if that FFmpeg is an LGPL build"
     fi
-    pip_wheel torchcodec
+    pip_wheel torchcodec "$CODEC"
     echo "$WHL" > "$DIST/.whl"
   )
   git -C "$SRC/torchcodec" checkout -q -- "$cml"
@@ -487,6 +530,8 @@ probe(){
   "$PY" - <<'EOF' || true
 import torch,torch.nn.functional as F
 print('torch',torch.__version__,'vulkan_available',torch.is_vulkan_available())
+cfg=torch.__config__.show()
+print('cpu blas:','MKL' if 'USE_MKL=ON' in cfg else 'Accelerate' if 'accelerate' in cfg.lower() else 'OpenBLAS' if 'openblas' in cfg.lower() else 'Eigen (slow)' if 'USE_EIGEN_FOR_BLAS=ON' in cfg else 'unknown')
 for mod in ['torchaudio','torchcodec']:
     try:
         m=__import__(mod)
@@ -554,18 +599,26 @@ native_build(){  # target
     # CMake's FindPython checks VIRTUAL_ENV before macOS framework Pythons (e.g. Homebrew's) and PATH
     export VIRTUAL_ENV="$venv"
     "$PY" -m pip install -q cmake ninja setuptools wheel
-    if want torch; then sync_repo torch https://github.com/pytorch/pytorch.git "$TORCH" "$clean_now"; fi
-    if want torchaudio; then sync_repo torchaudio https://github.com/pytorch/audio.git "$AUDIO" "$clean_now"; fi
-    if want torchcodec; then sync_repo torchcodec https://github.com/pytorch/torchcodec.git "$CODEC" "$clean_now"; fi
-    if want torch; then
+    # a package whose wheel for this version, suffix and Python is already in dist/ is skipped (no sync, no build)
+    tw="$(built_whl torch "$TORCH")"; aw="$(built_whl torchaudio "$AUDIO")"; cw="$(built_whl torchcodec "$CODEC")"
+    if want torch && [ -z "$tw" ]; then sync_repo torch https://github.com/pytorch/pytorch.git "$TORCH" "$clean_now"; fi
+    if want torchaudio && [ -z "$aw" ]; then sync_repo torchaudio https://github.com/pytorch/audio.git "$AUDIO" "$clean_now"; fi
+    if want torchcodec && [ -z "$cw" ]; then sync_repo torchcodec https://github.com/pytorch/torchcodec.git "$CODEC" "$clean_now"; fi
+    if want torch && [ -z "$tw" ]; then
       build_torch
     else
-      WHL="$(ls "$DIST"/torch-"$TORCH"+"$SUFFIX"-"$TAG"-*.whl 2>/dev/null | head -1 || true)"
+      WHL="$tw"
+      if [ -z "$WHL" ]; then WHL="$(ls -t "$DIST/torch-$TORCH+$SUFFIX-$TAG"-*.whl 2>/dev/null | head -1 || true)"; fi
       [ -n "$WHL" ] || die "torch is not in --pkgs and no torch-$TORCH+$SUFFIX $TAG wheel is in $DIST to build against"
+      if want torch; then log "torch $TORCH+$SUFFIX ($TAG) already built, skipped: $(basename "$WHL")"; BUILT="$BUILT $WHL"; fi
       "$PY" -m pip install -q "$WHL"
     fi
-    if want torchaudio; then build_torchaudio; fi
-    if want torchcodec; then build_torchcodec; fi
+    if want torchaudio; then
+      if [ -n "$aw" ]; then log "torchaudio $AUDIO+$SUFFIX ($TAG) already built, skipped: $(basename "$aw")"; WHL="$aw"; install_whl; BUILT="$BUILT $WHL"; else build_torchaudio; fi
+    fi
+    if want torchcodec; then
+      if [ -n "$cw" ]; then log "torchcodec $CODEC+$SUFFIX ($TAG) already built, skipped: $(basename "$cw")"; WHL="$cw"; install_whl; BUILT="$BUILT $WHL"; else build_torchcodec; fi
+    fi
     probe
     clean_now=1
   done
@@ -702,7 +755,7 @@ for T in $ONLY; do
       PULLED=0
       if ! $DOCKER image inspect "$IMG" >/dev/null 2>&1; then $DOCKER pull --platform "$PLAT" "$IMG"; PULLED=1; fi
       log "=== $T in $IMG"
-      $DOCKER run --rm --platform "$PLAT" -v "$ROOT":/work -v "$SELF":/build-torch-vulkan.sh:ro -e TORCH="$TORCH" -e AUDIO="$AUDIO" -e CODEC="$CODEC" -e SUFFIX="$SUFFIX" -e PYS="$PYS" -e PKGS="$PKGS" -e JOBS="$JOBS" -e CLEAN="$CLEAN" -e NO_BUNDLE="$NO_BUNDLE" -e CODEC_FFMPEG="$CODEC_FFMPEG" -e VK_TAG="$VK_TAG" -e SHADERC_TAG="$SHADERC_TAG" -e HOST_ID="$(id -u):$(id -g)" "$IMG" bash /build-torch-vulkan.sh --in-container "$T"
+      $DOCKER run --rm --platform "$PLAT" -v "$ROOT":/work -v "$SELF":/build-torch-vulkan.sh:ro -e TORCH="$TORCH" -e AUDIO="$AUDIO" -e CODEC="$CODEC" -e SUFFIX="$SUFFIX" -e PYS="$PYS" -e PKGS="$PKGS" -e JOBS="$JOBS" -e CLEAN="$CLEAN" -e NO_BUNDLE="$NO_BUNDLE" -e CODEC_FFMPEG="$CODEC_FFMPEG" -e FORCE="$FORCE" -e VK_TAG="$VK_TAG" -e SHADERC_TAG="$SHADERC_TAG" -e HOST_ID="$(id -u):$(id -g)" "$IMG" bash /build-torch-vulkan.sh --in-container "$T"
       if [ "$PULLED" = 1 ] && [ "$KEEP_IMAGES" != 1 ]; then $DOCKER rmi "$IMG" >/dev/null || true; fi;;
   esac
 done
