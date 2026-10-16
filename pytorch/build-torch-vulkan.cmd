@@ -473,13 +473,21 @@ if not exist "%RP%\.git" exit /b 1
 :sr_have
 git -C "%RP%" config core.longpaths true
 git -C "%RP%" -c core.longpaths=true fetch -q --tags --force origin || exit /b 1
-git -C "%RP%" -c advice.detachedHead=false checkout -q v%~3 || exit /b 1
+rem builds rewrite tracked files (torchcodec 0.11 and older write BUILD_VERSION into version.txt): restore them,
+rem or switching to another tag is refused
+git -C "%RP%" diff --quiet -- version.txt 2>nul || git -C "%RP%" checkout -q -- version.txt
+if not "%CLEANNOW%"=="1" goto :sr_checkout
+git -C "%RP%" reset -q --hard
+git -C "%RP%" clean -q -xdf
+git -C "%RP%" -c core.longpaths=true submodule foreach -q --recursive "git reset -q --hard && git clean -q -xdf"
+:sr_checkout
+git -C "%RP%" -c advice.detachedHead=false checkout -q v%~3 && goto :sr_sub
+echo [vk-build] ERROR: %~1: cannot switch to v%~3 - local changes in %RP%, see git status there; rerun with --clean to reset it
+exit /b 1
+:sr_sub
 git -C "%RP%" -c core.longpaths=true submodule sync -q --recursive || exit /b 1
 git -C "%RP%" -c core.longpaths=true submodule update -q --init --recursive --force || exit /b 1
 git -C "%RP%" -c core.longpaths=true submodule foreach -q --recursive git config core.longpaths true
-if not "%CLEANNOW%"=="1" exit /b 0
-git -C "%RP%" clean -q -xdf
-git -C "%RP%" submodule foreach -q --recursive git clean -q -xdf
 exit /b 0
 :pip_wheel
 del /q "%DIST%\%~1-*-%TAG%-*.whl" 2>nul

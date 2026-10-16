@@ -305,13 +305,17 @@ sync_repo(){  # name url version clean
   local path="$SRC/$1"
   if [ ! -d "$path/.git" ]; then git clone -c core.longpaths=true --recursive "$2" "$path"; fi
   git -C "$path" fetch -q --tags --force origin
-  git -C "$path" -c advice.detachedHead=false checkout -q "v$3"
+  # builds rewrite tracked files (torchcodec <= 0.11 writes BUILD_VERSION into version.txt): restore them, or
+  # switching to another tag is refused
+  if ! git -C "$path" diff --quiet -- version.txt 2>/dev/null; then git -C "$path" checkout -q -- version.txt; fi
+  if [ "$4" = 1 ]; then
+    git -C "$path" reset -q --hard
+    git -C "$path" clean -q -xdf
+    git -C "$path" submodule foreach -q --recursive "git reset -q --hard; git clean -q -xdf"
+  fi
+  git -C "$path" -c advice.detachedHead=false checkout -q "v$3" || die "$1: cannot switch to v$3 - local changes in $path (git -C $path status), rerun with --clean to reset it"
   git -C "$path" submodule sync -q --recursive
   git -C "$path" submodule update -q --init --recursive
-  if [ "$4" = 1 ]; then
-    git -C "$path" clean -q -xdf
-    git -C "$path" submodule foreach -q --recursive git clean -q -xdf
-  fi
 }
 pip_wheel(){  # package dir, env already exported by the caller's subshell
   rm -f "$DIST/$1"-*-"$TAG"-*.whl
