@@ -366,15 +366,24 @@ for T in $ONLY; do
         for f in "$d/zonos2-server" "$d/lib/libvulkan.1.dylib" "$d/lib/libMoltenVK.dylib"; do codesign --force --sign - "$f" 2>/dev/null; done
       fi
       echo "--- $T libs:" $(otool -L "$d/zonos2-server" | tail -n +2 | awk '{print $1}')
-      # every Mach-O of the package must start on macOS 11: the binary and, for Vulkan, the SDK's loader and MoltenVK
+      # the binary and what it links at load time (the Vulkan loader) must start on macOS 11. MoltenVK is not linked:
+      # the loader opens it at run time through MoltenVK_icd.json, so its floor is the GPU floor only (an older macOS
+      # still starts the server, with no Vulkan device, on CPU). Recent LunarG SDKs build MoltenVK for macOS 12
+      GPU_FLOOR=11.0
       for f in "$d/zonos2-server" $(ls "$d"/lib/*.dylib 2>/dev/null || true); do
         fl="$(macho_floor "$f" "$ARCH_M")"
         echo "--- $T macOS floor: ${fl:-?} ${f#$d/}"
-        if [ -n "$fl" ] && [ "$(printf '%s\n%s\n' "$fl" 11.0 | sort -V | tail -1)" != 11.0 ]; then
-          echo "$T: ${f#$d/} needs macOS $fl, the package must start on macOS 11.0 (use a Vulkan SDK whose MoltenVK and loader target 11.0)"
+        [ -n "$fl" ] && [ "$(printf '%s\n%s\n' "$fl" 11.0 | sort -V | tail -1)" != 11.0 ] || continue
+        if [ "$(basename "$f")" = libMoltenVK.dylib ]; then
+          GPU_FLOOR="$fl"
+        else
+          echo "$T: ${f#$d/} needs macOS $fl, the package must start on macOS 11.0"
           exit 1
         fi
       done
+      if [ "$T" = macos-x86_64-vulkan ]; then
+        echo "--- $T starts on macOS 11.0, GPU (MoltenVK) from macOS $GPU_FLOOR: set \"macos_min\": ${GPU_FLOOR%%.*} on its e2a entry"
+      fi
       pack "$T" macos;;
   esac
 done
