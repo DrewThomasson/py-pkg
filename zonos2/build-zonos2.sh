@@ -362,6 +362,10 @@ for T in $ONLY; do
         [ -n "$ref" ] || { echo "$T: zonos2-server does not link libvulkan, the Vulkan backend was not built"; exit 1; }
         [ "$ref" = @rpath/libvulkan.1.dylib ] || install_name_tool -change "$ref" @rpath/libvulkan.1.dylib "$d/zonos2-server"
         otool -l "$d/zonos2-server" | grep -q 'path @executable_path/lib ' || install_name_tool -add_rpath @executable_path/lib "$d/zonos2-server" 2>/dev/null
+        # CMake also leaves the build Mac's SDK folder as an rpath (/Users/<you>/VulkanSDK/...): keep only lib/
+        for rp in $(otool -l "$d/zonos2-server" | awk '/LC_RPATH/{r=1} r&&/ path /{print $2;r=0}'); do
+          [ "$rp" = @executable_path/lib ] || install_name_tool -delete_rpath "$rp" "$d/zonos2-server"
+        done
         # install_name_tool invalidates the signatures: ad-hoc sign again
         for f in "$d/zonos2-server" "$d/lib/libvulkan.1.dylib" "$d/lib/libMoltenVK.dylib"; do codesign --force --sign - "$f" 2>/dev/null; done
       fi
