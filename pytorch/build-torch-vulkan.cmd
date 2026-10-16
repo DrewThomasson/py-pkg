@@ -18,6 +18,7 @@ if not defined CODEC_FFMPEG set "CODEC_FFMPEG=auto"
 if not defined INSTALL_VK set "INSTALL_VK=auto"
 if not defined INSTALL_SDK set "INSTALL_SDK=1"
 if not defined INSTALL_BT set "INSTALL_BT=0"
+if not defined INSTALL_FFMPEG set "INSTALL_FFMPEG=1"
 set "GPU_OK=unknown"
 set "LIST=0"
 :args
@@ -29,6 +30,7 @@ if /i "%~1"=="--no-bundle" (set "NO_BUNDLE=1" & shift & goto :args)
 if /i "%~1"=="--install-vulkan" (set "INSTALL_VK=1" & shift & goto :args)
 if /i "%~1"=="--no-install-vulkan" (set "INSTALL_VK=0" & shift & goto :args)
 if /i "%~1"=="--no-install-sdk" (set "INSTALL_SDK=0" & shift & goto :args)
+if /i "%~1"=="--no-install-ffmpeg" (set "INSTALL_FFMPEG=0" & shift & goto :args)
 if /i "%~1"=="--install-buildtools" (set "INSTALL_BT=1" & shift & goto :args)
 if /i "%~1"=="-h" goto :usage
 if /i "%~1"=="--help" goto :usage
@@ -152,6 +154,9 @@ echo   --no-install-sdk        do not install the LunarG Vulkan SDK when it is m
 echo                           latest SDK for this architecture into %%LOCALAPPDATA%%\VulkanSDK, checksum-verified,
 echo                           copy-only, may show a UAC prompt; also fetches LunarG's vulkan-1.dll to bundle if needed
 echo   --install-buildtools    install Visual Studio 2022 Build Tools with C++ through winget [INSTALL_BT=1]  several GB, UAC
+echo   --no-install-ffmpeg     do not fetch a runtime FFmpeg for torchcodec                  [INSTALL_FFMPEG=0] default: fetches it
+echo                           torchcodec loads FFmpeg from the first ffmpeg.exe on PATH - a shared build, FFmpeg 4 to 8.0;
+echo                           without one the newest compatible shared build from Gyan.dev goes into ROOT\tools, x64
 echo   -h, --help
 echo Output
 echo   ROOT\dist\TARGET\PKG-VER+SUFFIX-cpXY-cpXY-win_amd64.whl or win_arm64.whl, sources in ROOT\src-TARGET
@@ -229,6 +234,7 @@ call :build_torch || exit /b 1
 :bp_rest
 call :want torchaudio && (call :build_torchaudio || exit /b 1)
 call :want torchcodec && (call :build_torchcodec || exit /b 1)
+call :want torchcodec && call :runtime_ffmpeg
 if "%GPU_OK%"=="0" (echo [vk-build] op probe skipped: no Vulkan driver on this machine) else call :probe
 set "CLEANNOW=1"
 exit /b 0
@@ -258,6 +264,63 @@ exit /b 0
 :sj_user
 if %JOBS% GTR %MJ% echo [vk-build] WARNING: --jobs %JOBS% is more than the %MJ% that %RAM_GB% GB RAM supports with room for linking - if cl.exe or link.exe run out of memory, use --jobs %MJ%
 exit /b 0
+:runtime_ffmpeg
+rem torchcodec loads FFmpeg at run time from the folder of the first ffmpeg.exe on PATH, which must be a shared build
+rem of a major this torchcodec supports; otherwise fetch a versioned shared build from Gyan.dev (GyanD/codexffmpeg, x64)
+rem into ROOT\tools - BtbN's rolling releases only carry FFmpeg 8.1+ now, which torchcodec 0.11.1 does not accept
+set "FFCMAKE=%SRC%\torchcodec\src\torchcodec\share\cmake\TorchCodec\ffmpeg_versions.cmake"
+set "FFDIR=%ROOT%\tools\ffmpeg-%HOSTA%"
+set "FFBIN="
+for /f "delims=" %%f in ('where ffmpeg 2^>nul') do if not defined FFBIN set "FFBIN=%%~dpf"
+if not defined FFBIN goto :rf_local
+call :ff_ok "%FFBIN%" || goto :rf_local
+echo [vk-build] torchcodec runtime FFmpeg: %FFBIN%
+exit /b 0
+:rf_local
+if not exist "%FFDIR%\bin\ffmpeg.exe" goto :rf_fetch
+call :ff_ok "%FFDIR%\bin\" && goto :rf_path
+:rf_fetch
+if not "%INSTALL_FFMPEG%"=="1" (echo [vk-build] no torchcodec-compatible shared FFmpeg on PATH - torchcodec will not load, see --help & exit /b 0)
+if "%HOSTA%"=="arm64" (echo [vk-build] no torchcodec-compatible shared FFmpeg on PATH - on arm64 put the FFmpeg torchcodec was built against on PATH & exit /b 0)
+for %%b in (8.0.1 8.0 7.1.1 7.1) do call :ff_try %%b && goto :rf_path
+echo [vk-build] WARNING: could not fetch a torchcodec-compatible FFmpeg - torchcodec will not load until one is on PATH
+exit /b 0
+:rf_path
+set "PATH=%FFDIR%\bin;%PATH%"
+echo [vk-build] torchcodec runtime FFmpeg: %FFDIR%\bin - put this folder on PATH wherever these wheels are used
+exit /b 0
+:ff_try
+set "FFNAME=ffmpeg-%~1-full_build-shared"
+set "FFTMP=%ROOT%\tools\_ffmpeg_dl"
+set "FFZIP=%ROOT%\tools\_ffmpeg_dl.zip"
+if not exist "%ROOT%\tools" mkdir "%ROOT%\tools"
+if exist "%FFTMP%" rmdir /s /q "%FFTMP%"
+curl.exe -fsL -o "%FFZIP%" https://github.com/GyanD/codexffmpeg/releases/download/%~1/%FFNAME%.zip || exit /b 1
+powershell -NoProfile -c "Expand-Archive -Force -LiteralPath '%FFZIP%' -DestinationPath '%FFTMP%'" || exit /b 1
+del /q "%FFZIP%" 2>nul
+call :ff_ok "%FFTMP%\%FFNAME%\bin\" || goto :ff_reject
+if exist "%FFDIR%" rmdir /s /q "%FFDIR%"
+move "%FFTMP%\%FFNAME%" "%FFDIR%" >nul || exit /b 1
+rmdir /s /q "%FFTMP%"
+echo [vk-build] fetched FFmpeg %~1 shared build from Gyan.dev for torchcodec - GPL, used at run time only, not bundled
+exit /b 0
+:ff_reject
+echo [vk-build] FFmpeg %~1 has avcodec-%FFAVC%, which torchcodec %CODEC% does not accept - trying an older one
+rmdir /s /q "%FFTMP%"
+exit /b 1
+:ff_ok
+rem ok when the folder (with a trailing backslash) holds avcodec-NN.dll and torchcodec maps libavcodec NN
+set "FFAVC="
+for %%d in ("%~1avcodec-*.dll") do set "FFAVC=%%~nd"
+if not defined FFAVC exit /b 1
+set "FFAVC=%FFAVC:avcodec-=%"
+if exist "%FFCMAKE%" goto :fo_cmake
+if %FFAVC% LSS 58 exit /b 1
+if %FFAVC% GTR 62 exit /b 1
+exit /b 0
+:fo_cmake
+findstr /c:"STREQUAL \"%FFAVC%\"" "%FFCMAKE%" >nul
+exit /b %ERRORLEVEL%
 :install_on
 if "%INSTALL_VK%"=="1" exit /b 0
 if "%INSTALL_VK%"=="0" exit /b 1
@@ -546,7 +609,8 @@ set "PROBE=%TEMP%\vk_probe_%RANDOM%.py"
 >>"%PROBE%" echo(        m=__import__(mod)
 >>"%PROBE%" echo(        print(mod,m.__version__)
 >>"%PROBE%" echo(    except Exception as e:
->>"%PROBE%" echo(        print(mod,'not available:',str(e).splitlines()[0][:120])
+>>"%PROBE%" echo(        print(mod,'not available:')
+>>"%PROBE%" echo(        for l in str(e).splitlines()[:12]:print('   ',l[:160])
 >>"%PROBE%" echo(if torch.is_vulkan_available():
 >>"%PROBE%" echo(    x=torch.randn(1,8,64)
 >>"%PROBE%" echo(    tests=dict(

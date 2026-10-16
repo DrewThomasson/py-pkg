@@ -101,7 +101,7 @@ The two scripts share every option. Each option can also be set with the environ
 | `--codec-ffmpeg MODE` | `CODEC_FFMPEG` | `auto` | Where torchcodec's FFmpeg comes from, see [torchcodec and FFmpeg](#torchcodec-and-ffmpeg) |
 | `--no-bundle` | `NO_BUNDLE=1` | | Don't put the Vulkan loader (macOS: plus MoltenVK) into the torch wheel |
 | `--no-install-sdk` | `INSTALL_SDK=0` | installs it | Don't install the LunarG SDK when it's missing (macOS, Windows) |
-| `--no-install-ffmpeg` | `INSTALL_FFMPEG=0` | installs it | Don't install a Homebrew `ffmpeg@N` keg for torchcodec (macOS, `.sh` only) |
+| `--no-install-ffmpeg` | `INSTALL_FFMPEG=0` | installs it | macOS: don't install a Homebrew `ffmpeg@N` keg for the torchcodec build. Windows x64: don't fetch a runtime FFmpeg for torchcodec |
 | `--install-vulkan` | `INSTALL_VK=1` | arm64 hosts only | Run the [Vulkan install job](#vulkan-install-job) on any host |
 | `--no-install-vulkan` | `INSTALL_VK=0` | | Never run it |
 | `--macos-min X.Y` | `MACOS_MIN` | `11.0` | Oldest macOS the wheels run on (`.sh` only) |
@@ -185,7 +185,17 @@ So on an Intel Mac or Windows on ARM, `auto` needs a local FFmpeg:
 - **Intel Mac:** installed automatically when none fits. The script reads the FFmpeg majors torchcodec lists (8 down to 4 for 0.11.1) and installs Homebrew's keg-only `ffmpeg@N` from the newest down, checking each one's `libavcodec`. A keg torchcodec rejects is removed again, and a keg that was already installed, including `ffmpeg@8` as an alias of your main `ffmpeg`, is never touched. Today this lands on `ffmpeg@7`: Homebrew's `ffmpeg@8` follows FFmpeg 8.1 (`libavcodec` 63), while torchcodec 0.11.1 stops at 8.0 (`libavcodec` 62). Your default `ffmpeg` stays as it is
 - **Windows on ARM:** a shared LGPL FFmpeg with its `.pc` files on `PKG_CONFIG_PATH`, and `pkg-config`
 
-At runtime, torchcodec still needs an FFmpeg installed on the user's machine.
+### FFmpeg at runtime
+
+The build-time FFmpeg is not shipped in the wheel. Wherever the torchcodec wheel is used, it needs an FFmpeg of a major it supports (4 to 8.0 for 0.11.1; FFmpeg 8.1 and newer are rejected):
+
+| OS | How torchcodec finds it | What the scripts do for the probe |
+|---|---|---|
+| Windows | the folder of the first `ffmpeg.exe` on `PATH` must hold the shared DLLs (`avcodec-NN.dll`, ...) | x64: use the `ffmpeg.exe` on `PATH` if it fits, else fetch Gyan.dev's versioned shared build (8.0.1 down to 7.1) into `<root>\tools\ffmpeg-x64` and put it on `PATH`; `--no-install-ffmpeg` turns this off. Gyan.dev builds are GPL; they are used at runtime only, never bundled |
+| macOS | the Homebrew keg it was built against (absolute install names) | the keg installed for the build stays installed |
+| Linux | the system's shared FFmpeg (`libavcodec.so.58` to `.62`) | nothing; install your distribution's FFmpeg libraries |
+
+BtbN's rolling Windows builds now only carry FFmpeg 8.1 and 9.0, which is why the Windows fallback uses Gyan.dev's versioned releases.
 
 ## Vulkan install job
 
@@ -263,13 +273,14 @@ Each one is applied only where needed. Where a source file is patched, it is res
 | Build broke after changing versions | Rerun with `--clean` |
 | `vulkan_available False` in the probe | No Vulkan driver on that machine; run `--list` on arm64 hosts to see the GPU status |
 | torchcodec skipped | No prebuilt FFmpeg for this target; install a local one (see [torchcodec and FFmpeg](#torchcodec-and-ffmpeg)) |
+| `torchcodec not available: Could not load libtorchcodec` | No runtime FFmpeg of a supported major where it's used (see [FFmpeg at runtime](#ffmpeg-at-runtime)); the probe prints the full list of tried versions |
 
 ## Status
 
 | Platform | State |
 |---|---|
 | Linux x86_64 | Builds end to end: torch, torchaudio, torchcodec, manylinux_2_28 |
-| Windows x64 | Runs from any prompt; torch compiles with the MSVC fixes above; full run pending |
+| Windows x64 | Builds end to end on an 11 GB machine with a 32 GB pagefile: torch, torchaudio, torchcodec |
 | macOS x86_64 | torch and torchaudio build; torchcodec fixes for FFmpeg and Python selection added, rerun pending |
 | Linux aarch64, QEMU, macOS arm64, Windows arm64 | Written to the same pattern; first real runs pending |
 

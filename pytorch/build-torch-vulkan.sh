@@ -473,7 +473,8 @@ for mod in ['torchaudio','torchcodec']:
         m=__import__(mod)
         print(mod,m.__version__)
     except Exception as e:
-        print(mod,'not available:',str(e).splitlines()[0][:120])
+        print(mod,'not available:')
+        for l in str(e).splitlines()[:12]:print('   ',l[:160])
 if torch.is_vulkan_available():
     x=torch.randn(1,8,64)
     tests=dict(
