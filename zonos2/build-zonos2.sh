@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the e2a zonos2-server packages (zonos2.cpp, Zyphra) this machine can build: Linux aarch64 (Jetson, ARM CPU,
-# ARM CUDA servers, in Docker), Linux x86_64 (x64 CPU, Vulkan and Windows CPU packages, with zig) or an Intel Mac.
+# ARM CUDA servers, in Docker), Linux x86_64 (x64 CPU, Vulkan and Windows CPU packages, with zig), an Intel Mac (CPU,
+# Vulkan through MoltenVK) or an Apple Silicon Mac (Metal).
 # Run ./build-zonos2.sh --help for the targets and options, --list for what this machine can build now.
 set -euo pipefail
 usage(){
@@ -29,7 +30,12 @@ Targets
     windows-x64-cpu-avx2   Windows 10+, system DLLs only (UCRT, no VC++ runtime)
     windows-x64-cpu-sse42  same, SSE4.2
   on an Intel Mac:
-    macos-x86_64           CPU (Accelerate), AVX2 baseline, macOS >= --macos-min
+    macos-x86_64           CPU (Accelerate), AVX2 baseline, macOS >= 11.0
+    macos-x86_64-vulkan    GPU via Vulkan through MoltenVK (AMD/Intel GPUs with Metal), CPU part AVX2, macOS >= 11.0,
+                           + its own Vulkan loader and MoltenVK in lib/ (nothing to install on the user's Mac)
+  on an Apple Silicon Mac:
+    macos-arm64            GPU via Metal (shaders embedded), CPU part ARMv8.4 + dotprod + fp16 (M1+),
+                           macOS >= 11.0 (Zyphra's macos-arm64-metal needs macOS 15)
 
 Options (each one also works as the environment variable in brackets)
   -h, --help             this help
@@ -44,7 +50,6 @@ Options (each one also works as the environment variable in brackets)
   --keep-images          keep the Docker images this run pulled           [KEEP_IMAGES=1] default: removed after
                                                                            each target (images already there stay)
   --clean                delete each build-<target> folder after packing  [CLEAN=1] default: kept (fast rebuilds)
-  --macos-min X.Y        oldest macOS for macos-x86_64                     [MACOS_MIN] default: 11.0
 
 Needs
   every machine: git, curl, python3 (uv is installed if missing)
@@ -52,7 +57,11 @@ Needs
   linux-x64-vulkan: Vulkan headers, SPIR-V headers, glslc, libvulkan.so, and more than 4 GB of RAM
     Fedora: dnf install vulkan-headers vulkan-loader-devel glslc spirv-headers-devel
     Ubuntu: apt-get install libvulkan-dev glslc spirv-headers
-  macos-x86_64: Xcode Command Line Tools (xcode-select --install)
+  macos-x86_64-vulkan: the LunarG Vulkan SDK for macOS (https://vulkan.lunarg.com, installed in ~/VulkanSDK/<version>,
+    or VULKAN_SDK=<sdk>/macOS): headers, glslc, the Vulkan loader and MoltenVK
+  macos-x86_64, macos-x86_64-vulkan, macos-arm64: macOS 11 or newer on the build Mac (the packages target macOS 11.0, older SDKs cannot),
+    Xcode Command Line Tools (xcode-select --install); the Metal shaders are embedded as source and compiled at
+    run time, so the full Xcode (metal compiler) is not needed
 
 Examples
   ./build-zonos2.sh --list
@@ -75,7 +84,6 @@ while [ $# -gt 0 ]; do
     --archs13) ARCHS13="$2"; shift;;
     --keep-images) KEEP_IMAGES=1;;
     --clean) CLEAN=1;;
-    --macos-min) MACOS_MIN="$2"; shift;;
     *) echo "unknown option $1 (see --help)"; exit 1;;
   esac
   shift
@@ -99,13 +107,25 @@ HOST="$(uname -s)-$(uname -m)"
 case "$HOST" in
   Linux-aarch64) ALL="jetson5-sm72-sm87 jetson6-sm87 jetson7-sm87-sm110 linux-aarch64 linux-aarch64-v82 linux-aarch64-cuda13 linux-aarch64-cuda12";;
   Linux-x86_64) ALL="linux-x64-cpu-avx2 linux-x64-cpu-sse42 linux-x64-vulkan windows-x64-cpu-avx2 windows-x64-cpu-sse42";;
-  Darwin-x86_64) ALL="macos-x86_64";;
-  Darwin-arm64) echo "nothing to build on Apple Silicon: e2a uses Zyphra's own macos-arm64-metal package"; exit 0;;
-  *) echo "no zonos2 targets for a $HOST machine (supported: Linux x86_64, Linux aarch64, Intel Mac)"; exit 1;;
+  Darwin-x86_64) ALL="macos-x86_64 macos-x86_64-vulkan";;
+  Darwin-arm64) ALL="macos-arm64";;
+  *) echo "no zonos2 targets for a $HOST machine (supported: Linux x86_64, Linux aarch64, Mac)"; exit 1;;
 esac
+# the macos-* packages target macOS 11.0: a Mac older than that has no SDK for it
+if [ "$(uname -s)" = Darwin ]; then
+  MACOS_VER="$(sw_vers -productVersion)"
+  [ "${MACOS_VER%%.*}" -ge 11 ] || { echo "this Mac runs macOS $MACOS_VER: building the macos-* packages needs macOS 11 or newer"; exit 1; }
+fi
 # Docker through sudo, except for root
 SUDO=sudo
 [ "$(id -u)" = 0 ] && SUDO=""
+vk_sdk(){ # the LunarG Vulkan SDK's macOS folder: VULKAN_SDK, else the newest one in ~/VulkanSDK
+  if [ -n "${VULKAN_SDK:-}" ]; then echo "$VULKAN_SDK"; return 0; fi
+  ls -d "$HOME"/VulkanSDK/*/macOS 2>/dev/null | sort -V | tail -1 || true
+}
+macho_floor(){ # oldest macOS a Mach-O (its x86_64 / arm64 slice $2) starts on
+  otool -arch "$2" -l "$1" 2>/dev/null | awk '/LC_BUILD_VERSION/{b=1} b&&/minos/{print $2;exit} /LC_VERSION_MIN_MACOSX/{v=1} v&&/ version /{print $2;exit}'
+}
 missing(){ # prints why target $1 cannot be built here, nothing when it can
   case "$1" in
     jetson*|linux-aarch64*) command -v docker >/dev/null || echo "Docker is not installed";;
@@ -116,7 +136,21 @@ missing(){ # prints why target $1 cannot be built here, nothing when it can
       command -v glslc >/dev/null || m="$m glslc,"
       [ -e /usr/lib/x86_64-linux-gnu/libvulkan.so ] || [ -e /usr/lib64/libvulkan.so ] || [ -e /usr/lib/libvulkan.so ] || m="$m libvulkan.so (dev package),"
       [ -n "$m" ] && echo "missing:${m%,} (see --help)";;
-    macos-x86_64) xcode-select -p >/dev/null 2>&1 || echo "Xcode Command Line Tools are missing (xcode-select --install)";;
+    macos-x86_64|macos-arm64) xcode-select -p >/dev/null 2>&1 || echo "Xcode Command Line Tools are missing (xcode-select --install)";;
+    macos-x86_64-vulkan)
+      local m="" sdk
+      xcode-select -p >/dev/null 2>&1 || m="$m Xcode Command Line Tools,"
+      sdk="$(vk_sdk)"
+      if [ -z "$sdk" ]; then
+        m="$m LunarG Vulkan SDK (~/VulkanSDK/<version>/macOS or VULKAN_SDK=<sdk>/macOS),"
+      else
+        [ -f "$sdk/include/vulkan/vulkan.h" ] || m="$m Vulkan headers in $sdk/include,"
+        [ -x "$sdk/bin/glslc" ] || m="$m glslc in $sdk/bin,"
+        [ -f "$sdk/lib/libvulkan.1.dylib" ] || m="$m Vulkan loader in $sdk/lib,"
+        [ -f "$sdk/lib/libMoltenVK.dylib" ] || m="$m MoltenVK in $sdk/lib,"
+        [ -f "$sdk/share/vulkan/icd.d/MoltenVK_icd.json" ] || m="$m MoltenVK_icd.json in $sdk/share/vulkan/icd.d,"
+      fi
+      [ -n "$m" ] && echo "missing:${m%,} (see --help)";;
   esac
   true
 }
@@ -170,7 +204,10 @@ pack(){ # $1 target, $2 OS (linux/windows/macos); the folder zonos2-server-<targ
     echo "nlohmann/json 3.11.3: Copyright (c) 2013-2023 Niels Lohmann, MIT License"
     echo "ggml: MIT License, see LICENSE-ggml"
     case "$t" in linux-x64-*|windows-x64-*) echo "Built with zig (LLVM libc++, Apache-2.0 WITH LLVM-exception)";; esac
-    [ -d "$d/lib" ] && echo "lib/: NVIDIA CUDA runtime and cuBLAS, redistributed under the NVIDIA CUDA Toolkit EULA"
+    case "$t" in
+      macos-*-vulkan) echo "lib/: Vulkan loader and MoltenVK (LunarG Vulkan SDK, Khronos), Apache License 2.0";;
+      *) [ -d "$d/lib" ] && echo "lib/: NVIDIA CUDA runtime and cuBLAS, redistributed under the NVIDIA CUDA Toolkit EULA";;
+    esac
     true
   } > "$d/NOTICE"
   rm -f "$d.tar.gz" "$d.zip"
@@ -284,18 +321,60 @@ for T in $ONLY; do
       zig_target "$T" linux "$AVX2 -DGGML_VULKAN=ON -DVulkan_INCLUDE_DIR=$VK -DVulkan_LIBRARY=$LIBVK -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined";;
     windows-x64-cpu-avx2) zig_target "$T" windows "$AVX2";;
     windows-x64-cpu-sse42) zig_target "$T" windows "$SSE42";;
-    macos-x86_64)
-      # native clang; AVX2 baseline instead of this Mac's CPU, and an older macOS floor than the one it runs
+    macos-x86_64|macos-arm64|macos-x86_64-vulkan)
+      # native clang, a baseline CPU instead of this Mac's, and an older macOS floor than the one it runs.
+      # x86_64: CPU only. ggml's Metal backend targets Apple GPUs (Apple7+ features), Intel Macs stay on Accelerate.
+      # arm64: Metal with the shader source embedded (GGML_METAL_EMBED_LIBRARY), so no default.metallib next to the
+      # binary and no full Xcode needed. Both target macOS 11.0, the first macOS on Apple Silicon: Zyphra's own build
+      # sets no floor and inherits its macOS 15 runner, which leaves Apple Silicon Macs on 11-14 without any package
+      # x86_64-vulkan: ggml's Vulkan backend on MoltenVK (Vulkan over Metal), so Intel Macs with an AMD or Intel GPU get
+      # a GPU path. The package carries the SDK's loader and MoltenVK in lib/ (found through @executable_path/lib) and
+      # MoltenVK_icd.json, which e2a points the loader at (VK_DRIVER_FILES): nothing to install on the user's Mac
+      case "$T" in
+        macos-arm64) MFLAGS="-DGGML_CPU_ARM_ARCH=armv8.4-a+dotprod+fp16 -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0";;
+        macos-x86_64-vulkan)
+          VK_SDK="$(vk_sdk)"
+          export VULKAN_SDK="$VK_SDK" PATH="$VK_SDK/bin:$PATH"
+          MFLAGS="$AVX2 -DGGML_METAL=OFF -DGGML_VULKAN=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,@executable_path/lib";;
+        *) MFLAGS="$AVX2 -DGGML_METAL=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0";;
+      esac
       command -v uv >/dev/null || { curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; command -v uv >/dev/null || { echo "uv could not be installed"; exit 1; }; }
       [ -x "$HOME/zbuild/bin/python" ] || uv venv -q "$HOME/zbuild"
       uv pip install -q --python "$HOME/zbuild/bin/python" cmake ninja
       export PATH="$HOME/zbuild/bin:$PATH"
-      cmake -B "build-$T" $COMMON $AVX2 -DGGML_METAL=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOS_MIN:-11.0}"
+      cmake -B "build-$T" $COMMON $MFLAGS
       cmake --build "build-$T" --target zonos2-server -j"$JOBS"
       d="zonos2-server-$T"
       rm -rf "$d" && mkdir -p "$d" && cp "build-$T/zonos2-server" "$d/"
+      ARCH_M=x86_64
+      [ "$T" = macos-arm64 ] && ARCH_M=arm64
+      if [ "$T" = macos-x86_64-vulkan ]; then
+        mkdir -p "$d/lib"
+        for l in libvulkan.1.dylib libMoltenVK.dylib; do
+          cp -L "$VK_SDK/lib/$l" "$d/lib/$l"
+          chmod u+w "$d/lib/$l"
+          # the SDK ships universal dylibs: keep the x86_64 slice only
+          if [ "$(lipo -archs "$d/lib/$l" | wc -w)" -gt 1 ]; then lipo "$d/lib/$l" -thin x86_64 -output "$d/lib/$l.thin" && mv "$d/lib/$l.thin" "$d/lib/$l"; fi
+          install_name_tool -id "@rpath/$l" "$d/lib/$l" 2>/dev/null
+        done
+        sed 's|"library_path"[[:space:]]*:[[:space:]]*"[^"]*"|"library_path": "./libMoltenVK.dylib"|' "$VK_SDK/share/vulkan/icd.d/MoltenVK_icd.json" > "$d/lib/MoltenVK_icd.json"
+        ref="$(otool -L "$d/zonos2-server" | awk '/libvulkan/{print $1; exit}')"
+        [ -n "$ref" ] || { echo "$T: zonos2-server does not link libvulkan, the Vulkan backend was not built"; exit 1; }
+        [ "$ref" = @rpath/libvulkan.1.dylib ] || install_name_tool -change "$ref" @rpath/libvulkan.1.dylib "$d/zonos2-server"
+        otool -l "$d/zonos2-server" | grep -q 'path @executable_path/lib ' || install_name_tool -add_rpath @executable_path/lib "$d/zonos2-server" 2>/dev/null
+        # install_name_tool invalidates the signatures: ad-hoc sign again
+        for f in "$d/zonos2-server" "$d/lib/libvulkan.1.dylib" "$d/lib/libMoltenVK.dylib"; do codesign --force --sign - "$f" 2>/dev/null; done
+      fi
       echo "--- $T libs:" $(otool -L "$d/zonos2-server" | tail -n +2 | awk '{print $1}')
-      echo "--- $T macOS floor:" $(otool -l "$d/zonos2-server" | awk '/minos/{print $2}')
+      # every Mach-O of the package must start on macOS 11: the binary and, for Vulkan, the SDK's loader and MoltenVK
+      for f in "$d/zonos2-server" $(ls "$d"/lib/*.dylib 2>/dev/null || true); do
+        fl="$(macho_floor "$f" "$ARCH_M")"
+        echo "--- $T macOS floor: ${fl:-?} ${f#$d/}"
+        if [ -n "$fl" ] && [ "$(printf '%s\n%s\n' "$fl" 11.0 | sort -V | tail -1)" != 11.0 ]; then
+          echo "$T: ${f#$d/} needs macOS $fl, the package must start on macOS 11.0 (use a Vulkan SDK whose MoltenVK and loader target 11.0)"
+          exit 1
+        fi
+      done
       pack "$T" macos;;
   esac
 done
