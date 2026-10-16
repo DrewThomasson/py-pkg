@@ -363,6 +363,15 @@ bundle_vulkan(){
       otool -l "$dylib" | grep -q 'path @loader_path ' || install_name_tool -add_rpath @loader_path "$dylib"
       signed="$signed $dylib"
     done
+    # rpaths into the Vulkan SDK would load the SDK's loader before the bundled one (and leak the build path)
+    for dylib in "$lib"/*.dylib; do
+      [ -L "$dylib" ] && continue
+      local rp drop=""
+      for rp in $(otool -l "$dylib" | awk '/cmd LC_RPATH/{getline;getline;print $2}'); do
+        case "$rp" in "$VULKAN_SDK"*) install_name_tool -delete_rpath "$rp" "$dylib"; drop=1;; esac
+      done
+      if [ -n "$drop" ]; then case " $signed " in *" $dylib "*) ;; *) signed="$signed $dylib";; esac; fi
+    done
     for dylib in "$lib/libvulkan.1.dylib" "$lib/libMoltenVK.dylib" $signed; do codesign --force --sign - "$dylib" 2>/dev/null; done
     local init="${pkg}torch/__init__.py" hook="$tmp/hook.py"
     if ! grep -q vulkan-bundle "$init"; then
@@ -430,14 +439,16 @@ build_torchcodec(){
   rm -rf "$SRC/torchcodec/build"
   local cml=src/torchcodec/_core/CMakeLists.txt
   git -C "$SRC/torchcodec" checkout -q -- "$cml"
-  if [ -n "${AUDITWHEEL_PLAT:-}" ] && grep -q 'COMPONENTS Development)' "$SRC/torchcodec/$cml"; then
-    # manylinux Pythons ship no libpython on purpose: a Linux extension gets its Python symbols from the interpreter
-    # at import time, so only the headers (Development.Module) are needed, not the embedding library
-    sed -i 's/COMPONENTS Development)/COMPONENTS Development.Module)/' "$SRC/torchcodec/$cml"
-    log "torchcodec: asking CMake for Python Development.Module only (manylinux has no libpython)"
+  if { [ -n "${AUDITWHEEL_PLAT:-}" ] || [ "$OS" = Darwin ]; } && grep -q 'COMPONENTS Development)' "$SRC/torchcodec/$cml"; then
+    # an extension module must get its Python symbols from the running interpreter, not link libpython: manylinux
+    # Pythons ship no libpython on purpose, and on macOS linking it bakes the build machine's absolute path into
+    # the wheel. Only the headers (Development.Module) are needed; macOS also needs -undefined dynamic_lookup
+    sed -i.orig 's/COMPONENTS Development)/COMPONENTS Development.Module)/' "$SRC/torchcodec/$cml" && rm -f "$SRC/torchcodec/$cml.orig"
+    log "torchcodec: Python Development.Module only, no libpython link"
   fi
   (
     export BUILD_VERSION="$CODEC+$SUFFIX"
+    if [ "$OS" = Darwin ]; then export LDFLAGS="-undefined dynamic_lookup${LDFLAGS:+ $LDFLAGS}"; fi
     # torchcodec's CMake does find_package(pybind11), which never looks inside a pip-installed pybind11
     pybind11_ROOT="$("$PY" -m pybind11 --cmakedir)"
     export pybind11_ROOT CMAKE_PREFIX_PATH="$pybind11_ROOT${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"

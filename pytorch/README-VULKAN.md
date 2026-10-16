@@ -182,20 +182,20 @@ In `local` mode the script accepts only the FFmpeg majors the torchcodec checkou
 
 So on an Intel Mac or Windows on ARM, `auto` needs a local FFmpeg:
 
-- **Intel Mac:** installed automatically when none fits. The script reads the FFmpeg majors torchcodec lists (8 down to 4 for 0.11.1) and installs Homebrew's keg-only `ffmpeg@N` from the newest down, checking each one's `libavcodec`. A keg torchcodec rejects is removed again, and a keg that was already installed, including `ffmpeg@8` as an alias of your main `ffmpeg`, is never touched. Today this lands on `ffmpeg@7`: Homebrew's `ffmpeg@8` follows FFmpeg 8.1 (`libavcodec` 63), while torchcodec 0.11.1 stops at 8.0 (`libavcodec` 62). Your default `ffmpeg` stays as it is
+- **Intel Mac:** installed automatically when none fits. The script reads the FFmpeg majors torchcodec lists (8 down to 4 for 0.11.1) and installs Homebrew's keg-only `ffmpeg@N` from the newest down, checking each one's `libavcodec`. A keg torchcodec rejects is removed again, and a keg that was already installed is never touched. Today this lands on `ffmpeg@8` (FFmpeg 8.x, `libavcodec` 62); Homebrew's plain `ffmpeg` has moved on to `libavcodec` 63, which torchcodec 0.11.1 rejects. Your default `ffmpeg` stays as it is. The wheel then needs that same keg at runtime: it links `/usr/local/opt/ffmpeg@8/lib/...` by absolute path
 - **Windows on ARM:** a shared LGPL FFmpeg with its `.pc` files on `PKG_CONFIG_PATH`, and `pkg-config`
 
 ### FFmpeg at runtime
 
-The build-time FFmpeg is not shipped in the wheel. Wherever the torchcodec wheel is used, it needs an FFmpeg of a major it supports (4 to 8.0 for 0.11.1; FFmpeg 8.1 and newer are rejected):
+The build-time FFmpeg is not shipped in the wheel. Wherever the torchcodec wheel is used, it needs an FFmpeg of a major it supports: `libavcodec` 58 to 62, i.e. FFmpeg 4 to 8.x, for 0.11.1. FFmpeg 9 (`libavcodec` 63) is rejected.
 
 | OS | How torchcodec finds it | What the scripts do for the probe |
 |---|---|---|
-| Windows | the folder of the first `ffmpeg.exe` on `PATH` must hold the shared DLLs (`avcodec-NN.dll`, ...) | x64: use the `ffmpeg.exe` on `PATH` if it fits, else fetch Gyan.dev's versioned shared build (8.0.1 down to 7.1) into `<root>\tools\ffmpeg-x64` and put it on `PATH`; `--no-install-ffmpeg` turns this off. Gyan.dev builds are GPL; they are used at runtime only, never bundled |
-| macOS | the Homebrew keg it was built against (absolute install names) | the keg installed for the build stays installed |
+| Windows | the folder of the first `ffmpeg.exe` on `PATH` must hold the shared DLLs (`avcodec-NN.dll`, ...) | use the `ffmpeg.exe` on `PATH` if it fits; else fetch BtbN's LGPL shared build (8.1, 8.0, 7.1; x64 and arm64), else Gyan.dev's versioned shared build (8.0.1 down to 7.1; x64, GPL), into `<root>\tools\ffmpeg-<arch>`, and put it on `PATH`. Each candidate is checked by its `avcodec-NN.dll`; `--no-install-ffmpeg` turns this off. Fetched builds are used at runtime only, never bundled |
+| macOS | the Homebrew keg it was built against, by absolute path (`/usr/local/opt/ffmpeg@8/lib` on Intel) | the keg installed for the build stays installed; users need the same `brew install ffmpeg@8` |
 | Linux | the system's shared FFmpeg (`libavcodec.so.58` to `.62`) | nothing; install your distribution's FFmpeg libraries |
 
-BtbN's rolling Windows builds now only carry FFmpeg 8.1 and 9.0, which is why the Windows fallback uses Gyan.dev's versioned releases.
+BtbN's rolling `latest` release only keeps its two newest release branches (today 8.1 and 9.0), so the Gyan.dev fallback covers the day 8.x drops out of it.
 
 ## Vulkan install job
 
@@ -257,6 +257,8 @@ Each one is applied only where needed. Where a source file is patched, it is res
 | A rerun of torchcodec still uses the Python / FFmpeg of a failed run (CMake and `pkg_check_modules` cache them) | all | torchcodec's build directory is removed before each build; it configures fresh in seconds |
 | CMake picks another Python (e.g. Homebrew's framework 3.14) instead of the build venv's | all | `VIRTUAL_ENV` exported for the build venv; CMake's FindPython checks it first |
 | `Unsupported libavcodec version` (FFmpeg newer than torchcodec supports) | `local` mode | supported majors read from the checkout; Homebrew `ffmpeg@N` kegs tried |
+| torchcodec linked the build machine's `libpython` by absolute path | macOS | `Development.Module` plus `-undefined dynamic_lookup`: Python symbols come from the running interpreter |
+| torch dylibs keep an rpath into the Vulkan SDK, so the SDK's loader shadows the bundled one | macOS | rpaths into `$VULKAN_SDK` are deleted during bundling, then the dylibs are re-signed |
 | `Python3_LIBRARY` NOTFOUND: manylinux Pythons ship no `libpython`, on purpose | Linux | torchcodec's `find_package(Python3 ... Development)` switched to `Development.Module` for the build |
 | torchcodec refuses to build against a local FFmpeg | `local` mode | `I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1`, with the LGPL warning printed |
 | Linking `torch_cpu` runs out of memory next to parallel compiles | all | links run one at a time (CMake job pool `vk_link=1`); a tree configured before this is reconfigured once with `CMAKE_FRESH=1`, and compiled objects are kept |
@@ -281,7 +283,7 @@ Each one is applied only where needed. Where a source file is patched, it is res
 |---|---|
 | Linux x86_64 | Builds end to end: torch, torchaudio, torchcodec, manylinux_2_28 |
 | Windows x64 | Builds end to end on an 11 GB machine with a 32 GB pagefile: torch, torchaudio, torchcodec |
-| macOS x86_64 | torch and torchaudio build; torchcodec fixes for FFmpeg and Python selection added, rerun pending |
+| macOS x86_64 | Builds end to end; torch and torchcodec wheels need the rebuild with the libpython / SDK-rpath fixes before publishing |
 | Linux aarch64, QEMU, macOS arm64, Windows arm64 | Written to the same pattern; first real runs pending |
 
 Untested parts:

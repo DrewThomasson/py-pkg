@@ -156,7 +156,7 @@ echo                           copy-only, may show a UAC prompt; also fetches Lu
 echo   --install-buildtools    install Visual Studio 2022 Build Tools with C++ through winget [INSTALL_BT=1]  several GB, UAC
 echo   --no-install-ffmpeg     do not fetch a runtime FFmpeg for torchcodec                  [INSTALL_FFMPEG=0] default: fetches it
 echo                           torchcodec loads FFmpeg from the first ffmpeg.exe on PATH - a shared build, FFmpeg 4 to 8.0;
-echo                           without one the newest compatible shared build from Gyan.dev goes into ROOT\tools, x64
+echo                           without one: BtbN's LGPL shared build, else Gyan.dev's x64 build, into ROOT\tools
 echo   -h, --help
 echo Output
 echo   ROOT\dist\TARGET\PKG-VER+SUFFIX-cpXY-cpXY-win_amd64.whl or win_arm64.whl, sources in ROOT\src-TARGET
@@ -266,8 +266,8 @@ if %JOBS% GTR %MJ% echo [vk-build] WARNING: --jobs %JOBS% is more than the %MJ% 
 exit /b 0
 :runtime_ffmpeg
 rem torchcodec loads FFmpeg at run time from the folder of the first ffmpeg.exe on PATH, which must be a shared build
-rem of a major this torchcodec supports; otherwise fetch a versioned shared build from Gyan.dev (GyanD/codexffmpeg, x64)
-rem into ROOT\tools - BtbN's rolling releases only carry FFmpeg 8.1+ now, which torchcodec 0.11.1 does not accept
+rem of a major this torchcodec supports; otherwise fetch one into ROOT\tools: BtbN's LGPL shared builds first (x64 and
+rem arm64), then Gyan.dev's versioned shared builds (x64, GPL). Every candidate is checked by its avcodec-NN.dll
 set "FFCMAKE=%SRC%\torchcodec\src\torchcodec\share\cmake\TorchCodec\ffmpeg_versions.cmake"
 set "FFDIR=%ROOT%\tools\ffmpeg-%HOSTA%"
 set "FFBIN="
@@ -281,8 +281,12 @@ if not exist "%FFDIR%\bin\ffmpeg.exe" goto :rf_fetch
 call :ff_ok "%FFDIR%\bin\" && goto :rf_path
 :rf_fetch
 if not "%INSTALL_FFMPEG%"=="1" (echo [vk-build] no torchcodec-compatible shared FFmpeg on PATH - torchcodec will not load, see --help & exit /b 0)
-if "%HOSTA%"=="arm64" (echo [vk-build] no torchcodec-compatible shared FFmpeg on PATH - on arm64 put the FFmpeg torchcodec was built against on PATH & exit /b 0)
-for %%b in (8.0.1 8.0 7.1.1 7.1) do call :ff_try %%b && goto :rf_path
+set "FFARCH=win64"
+if "%HOSTA%"=="arm64" set "FFARCH=winarm64"
+for %%b in (8.1 8.0 7.1) do call :ff_try btbn %%b && goto :rf_path
+if "%HOSTA%"=="arm64" goto :rf_none
+for %%b in (8.0.1 8.0 7.1.1 7.1) do call :ff_try gyan %%b && goto :rf_path
+:rf_none
 echo [vk-build] WARNING: could not fetch a torchcodec-compatible FFmpeg - torchcodec will not load until one is on PATH
 exit /b 0
 :rf_path
@@ -290,22 +294,25 @@ set "PATH=%FFDIR%\bin;%PATH%"
 echo [vk-build] torchcodec runtime FFmpeg: %FFDIR%\bin - put this folder on PATH wherever these wheels are used
 exit /b 0
 :ff_try
-set "FFNAME=ffmpeg-%~1-full_build-shared"
+rem %1 = btbn or gyan, %2 = FFmpeg version
+if "%~1"=="btbn" (set "FFNAME=ffmpeg-n%~2-latest-%FFARCH%-lgpl-shared-%~2") else set "FFNAME=ffmpeg-%~2-full_build-shared"
+set "FFURL=https://github.com/GyanD/codexffmpeg/releases/download/%~2/ffmpeg-%~2-full_build-shared.zip"
+if "%~1"=="btbn" set "FFURL=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/%FFNAME%.zip"
 set "FFTMP=%ROOT%\tools\_ffmpeg_dl"
 set "FFZIP=%ROOT%\tools\_ffmpeg_dl.zip"
 if not exist "%ROOT%\tools" mkdir "%ROOT%\tools"
 if exist "%FFTMP%" rmdir /s /q "%FFTMP%"
-curl.exe -fsL -o "%FFZIP%" https://github.com/GyanD/codexffmpeg/releases/download/%~1/%FFNAME%.zip || exit /b 1
+curl.exe -fsL -o "%FFZIP%" %FFURL% || exit /b 1
 powershell -NoProfile -c "Expand-Archive -Force -LiteralPath '%FFZIP%' -DestinationPath '%FFTMP%'" || exit /b 1
 del /q "%FFZIP%" 2>nul
 call :ff_ok "%FFTMP%\%FFNAME%\bin\" || goto :ff_reject
 if exist "%FFDIR%" rmdir /s /q "%FFDIR%"
 move "%FFTMP%\%FFNAME%" "%FFDIR%" >nul || exit /b 1
 rmdir /s /q "%FFTMP%"
-echo [vk-build] fetched FFmpeg %~1 shared build from Gyan.dev for torchcodec - GPL, used at run time only, not bundled
+if "%~1"=="btbn" (echo [vk-build] fetched FFmpeg %~2 LGPL shared build from BtbN/FFmpeg-Builds for torchcodec) else echo [vk-build] fetched FFmpeg %~2 shared build from Gyan.dev for torchcodec - GPL, used at run time only, not bundled
 exit /b 0
 :ff_reject
-echo [vk-build] FFmpeg %~1 has avcodec-%FFAVC%, which torchcodec %CODEC% does not accept - trying an older one
+echo [vk-build] FFmpeg %~2 has avcodec-%FFAVC%, which torchcodec %CODEC% does not accept - trying an older one
 rmdir /s /q "%FFTMP%"
 exit /b 1
 :ff_ok
