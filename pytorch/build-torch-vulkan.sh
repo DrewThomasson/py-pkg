@@ -8,7 +8,7 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 ROOT="${ROOT:-$PWD/pytorch-vulkan}"
 TORCH="${TORCH:-2.11.0}"
 AUDIO="${AUDIO:-2.11.0}"
-CODEC="${CODEC:-0.11.1}"
+CODEC="${CODEC:-0.17.0}"
 SUFFIX="${SUFFIX:-vulkan}"
 PYS="${PYS:-3.12}"
 PKGS="${PKGS:-torch torchaudio torchcodec}"
@@ -57,7 +57,7 @@ Options                                                                         
   --pkgs "torch ..."      packages to build                                               [PKGS]    default: $PKGS
   --torch VER             default: $TORCH                                                  [TORCH]
   --torchaudio VER        default: $AUDIO                                                  [AUDIO]
-  --torchcodec VER        default: $CODEC                                                  [CODEC]
+  --torchcodec VER        default: $CODEC (>= 0.12 works with every torch >= 2.11)       [CODEC]
   --py "3.10 3.12"        Python versions, one full torch build each                       [PYS]     default: $PYS
   --suffix TAG            local version tag, e.g. $TORCH+$SUFFIX                           [SUFFIX]  default: $SUFFIX
   --root DIR              sources, build tools, venvs and wheels                           [ROOT]    default: ./pytorch-vulkan
@@ -434,20 +434,24 @@ build_torchcodec(){
     log "skipping torchcodec: no prebuilt FFmpeg for $TARGET and no usable local one: $(ffmpeg_hint)"
     return 0
   fi
-  "$PY" -m pip install -q pybind11
+  # torchcodec >= 0.12 builds with scikit-build-core (no build isolation here, so it must be in the venv)
+  "$PY" -m pip install -q pybind11 scikit-build-core
   # torchcodec builds in minutes: always configure fresh, a cached CMake keeps the Python and the FFmpeg it found first
   rm -rf "$SRC/torchcodec/build"
   local cml=src/torchcodec/_core/CMakeLists.txt
   git -C "$SRC/torchcodec" checkout -q -- "$cml"
-  if { [ -n "${AUDITWHEEL_PLAT:-}" ] || [ "$OS" = Darwin ]; } && grep -q 'COMPONENTS Development)' "$SRC/torchcodec/$cml"; then
+  if { [ -n "${AUDITWHEEL_PLAT:-}" ] || [ "$OS" = Darwin ]; } && grep -q 'COMPONENTS Development[ )]' "$SRC/torchcodec/$cml"; then
     # an extension module must get its Python symbols from the running interpreter, not link libpython: manylinux
     # Pythons ship no libpython on purpose, and on macOS linking it bakes the build machine's absolute path into
     # the wheel. Only the headers (Development.Module) are needed; macOS also needs -undefined dynamic_lookup
-    sed -i.orig 's/COMPONENTS Development)/COMPONENTS Development.Module)/' "$SRC/torchcodec/$cml" && rm -f "$SRC/torchcodec/$cml.orig"
+    sed -i.orig 's/COMPONENTS Development\([ )]\)/COMPONENTS Development.Module\1/' "$SRC/torchcodec/$cml" && rm -f "$SRC/torchcodec/$cml.orig"
     log "torchcodec: Python Development.Module only, no libpython link"
   fi
   (
     export BUILD_VERSION="$CODEC+$SUFFIX"
+    # torchcodec >= 0.12 also builds image decoders, each one required (libjpeg, libpng, libwebp, libavif, libheif...);
+    # audio/video only unless asked for: TORCHCODEC_BUILD_IMAGE=1
+    export TORCHCODEC_BUILD_IMAGE="${TORCHCODEC_BUILD_IMAGE:-0}"
     if [ "$OS" = Darwin ]; then export LDFLAGS="-undefined dynamic_lookup${LDFLAGS:+ $LDFLAGS}"; fi
     # torchcodec's CMake does find_package(pybind11), which never looks inside a pip-installed pybind11
     pybind11_ROOT="$("$PY" -m pybind11 --cmakedir)"

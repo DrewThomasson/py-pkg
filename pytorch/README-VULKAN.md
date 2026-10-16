@@ -92,7 +92,7 @@ The two scripts share every option. Each option can also be set with the environ
 | `--pkgs "torch ..."` | `PKGS` | `torch torchaudio torchcodec` | Packages to build |
 | `--torch VER` | `TORCH` | `2.11.0` | torch version (git tag `v<VER>`) |
 | `--torchaudio VER` | `AUDIO` | `2.11.0` | torchaudio version |
-| `--torchcodec VER` | `CODEC` | `0.11.1` | torchcodec version |
+| `--torchcodec VER` | `CODEC` | `0.17.0` | torchcodec version; 0.12 and later work with every torch from 2.11 on |
 | `--py "3.10 3.12"` | `PYS` | `3.12` | Python versions; each one is a full torch build |
 | `--suffix TAG` | `SUFFIX` | `vulkan` | Local version tag: `2.11.0+vulkan` |
 | `--root DIR` | `ROOT` | `./pytorch-vulkan` | Sources, tools, venvs and wheels |
@@ -147,7 +147,7 @@ Checkouts and build trees are kept, so a rerun after a failure picks up where it
     torch-2.11.0+vulkan-cp312-cp312-macosx_11_0_arm64.whl        (macOS)
     torch-2.11.0+vulkan-cp312-cp312-win_amd64.whl                (Windows)
     torchaudio-2.11.0+vulkan-...whl
-    torchcodec-0.11.1+vulkan-...whl
+    torchcodec-0.17.0+vulkan-...whl
   src-<target>/{torch,torchaudio,torchcodec}    git checkouts and build trees
   venv-<target>-<python>/                       build venv, with the fresh wheels installed
   tools/<arch>/                                 Linux: Vulkan headers + loader, glslc
@@ -168,26 +168,35 @@ On desktop systems torch links the Vulkan loader directly; only Android builds l
 
 With the loader bundled, `import torch` works everywhere. `torch.is_vulkan_available()` is `True` only where a GPU driver provides Vulkan. Use `--no-bundle` to rely on the system loader instead.
 
+## torchcodec and torch versions
+
+Up to 0.11, each torchcodec release worked with exactly one torch release (0.11 ↔ 2.11, 0.10 ↔ 2.10, ...). Since 0.12, torchcodec uses PyTorch's stable ABI from torch 2.11 on: one torchcodec build works with torch 2.11 and every later release. Consequences:
+
+- **The `+vulkan` torch wheels can use the official torchcodec from PyPI** (0.17: Linux x86_64/aarch64, macOS 14+ arm64, Windows x64). Building torchcodec yourself is only needed where PyPI has no wheel: Intel Macs, Windows on ARM, and macOS arm64 older than 14.
+- **A torchcodec built here is not tied to the Vulkan torch.** It carries the `+vulkan` suffix only because it comes out of the same run.
+- **torch older than 2.11** (e.g. Jetson builds of 2.3 / 2.8 / 2.9) still needs the torchcodec of its own era: 0.9.x for 2.9, 0.7 for 2.8, none for 2.3.
+- **Image decoders:** 0.12+ also builds image decoders, each requiring its library (libjpeg, libpng, libwebp, libavif, libheif, ...). The scripts build audio/video only (`TORCHCODEC_BUILD_IMAGE=0`); set `TORCHCODEC_BUILD_IMAGE=1` with those libraries installed to include them.
+
 ## torchcodec and FFmpeg
 
 torchcodec links against FFmpeg at build time. `--codec-ffmpeg` picks the source:
 
 | Mode | What it does |
 |---|---|
-| `s3` | PyTorch's prebuilt LGPL FFmpeg builds, majors 4–8, like the official wheels. These exist for Linux x86_64/aarch64, macOS arm64 and Windows x64 only |
+| `s3` | PyTorch's prebuilt LGPL FFmpeg builds, every major the torchcodec version supports (4–9 for 0.17), like the official wheels. These exist for Linux x86_64/aarch64, macOS arm64 and Windows x64 only |
 | `local` | The FFmpeg that `pkg-config` finds. The wheel is only redistributable if that FFmpeg is an LGPL build (no `--enable-gpl` / `--enable-nonfree`) |
 | `auto` | `s3` where it exists, else `local` if found, else torchcodec is skipped with a note |
 
-In `local` mode the script accepts only the FFmpeg majors the torchcodec checkout lists (4–8 for 0.11.1). If the default FFmpeg is newer, it tries Homebrew's keg-only `ffmpeg@8` down to `ffmpeg@4` and uses the newest supported one.
+In `local` mode the script accepts only the FFmpeg majors the torchcodec checkout lists (4–9 for 0.17, 4–8 for 0.11). If the default FFmpeg is newer, it tries Homebrew's keg-only `ffmpeg@N` kegs and uses the newest supported one.
 
 So on an Intel Mac or Windows on ARM, `auto` needs a local FFmpeg:
 
-- **Intel Mac:** installed automatically when none fits. The script reads the FFmpeg majors torchcodec lists (8 down to 4 for 0.11.1) and installs Homebrew's keg-only `ffmpeg@N` from the newest down, checking each one's `libavcodec`. A keg torchcodec rejects is removed again, and a keg that was already installed is never touched. Today this lands on `ffmpeg@8` (FFmpeg 8.x, `libavcodec` 62); Homebrew's plain `ffmpeg` has moved on to `libavcodec` 63, which torchcodec 0.11.1 rejects. Your default `ffmpeg` stays as it is. The wheel then needs that same keg at runtime: it links `/usr/local/opt/ffmpeg@8/lib/...` by absolute path
+- **Intel Mac:** installed automatically when none fits. The script reads the FFmpeg majors torchcodec lists and installs Homebrew's keg-only `ffmpeg@N` from the newest down, checking each one's `libavcodec`. A keg torchcodec rejects is removed again, and a keg that was already installed is never touched. With torchcodec 0.17, Homebrew's plain `ffmpeg` (FFmpeg 9, `libavcodec` 63) is accepted directly, so nothing is installed; with 0.11 it lands on `ffmpeg@8`. The wheel links that FFmpeg by absolute path, so users need the same Homebrew FFmpeg at runtime
 - **Windows on ARM:** a shared LGPL FFmpeg with its `.pc` files on `PKG_CONFIG_PATH`, and `pkg-config`
 
 ### FFmpeg at runtime
 
-The build-time FFmpeg is not shipped in the wheel. Wherever the torchcodec wheel is used, it needs an FFmpeg of a major it supports: `libavcodec` 58 to 62, i.e. FFmpeg 4 to 8.x, for 0.11.1. FFmpeg 9 (`libavcodec` 63) is rejected.
+The build-time FFmpeg is not shipped in the wheel. Wherever the torchcodec wheel is used, it needs an FFmpeg of a major it supports: `libavcodec` 58 to 63, i.e. FFmpeg 4 to 9, for 0.17 (58 to 62, FFmpeg 4 to 8, for 0.11).
 
 | OS | How torchcodec finds it | What the scripts do for the probe |
 |---|---|---|
@@ -232,7 +241,7 @@ Each build ends with:
 ```
 torch 2.11.0+vulkan vulkan_available True
 torchaudio 2.11.0+vulkan
-torchcodec 0.11.1+vulkan
+torchcodec 0.17.0+vulkan
   softmax      OK
   gelu         OK
   layer_norm   OK
@@ -259,7 +268,8 @@ Each one is applied only where needed. Where a source file is patched, it is res
 | `Unsupported libavcodec version` (FFmpeg newer than torchcodec supports) | `local` mode | supported majors read from the checkout; Homebrew `ffmpeg@N` kegs tried |
 | torchcodec linked the build machine's `libpython` by absolute path | macOS | `Development.Module` plus `-undefined dynamic_lookup`: Python symbols come from the running interpreter |
 | torch dylibs keep an rpath into the Vulkan SDK, so the SDK's loader shadows the bundled one | macOS | rpaths into `$VULKAN_SDK` are deleted during bundling, then the dylibs are re-signed |
-| `Python3_LIBRARY` NOTFOUND: manylinux Pythons ship no `libpython`, on purpose | Linux | torchcodec's `find_package(Python3 ... Development)` switched to `Development.Module` for the build |
+| `Python3_LIBRARY` NOTFOUND: manylinux Pythons ship no `libpython`, on purpose | Linux | torchcodec's `find_package(Python3 ... Development ...)` switched to `Development.Module` for the build (0.17 itself already avoids linking libpython through `pybind11::module`) |
+| torchcodec 0.12+ builds with scikit-build-core and requires its image-decoder libraries | all | `scikit-build-core` installed into the build venv; `TORCHCODEC_BUILD_IMAGE=0` by default |
 | torchcodec refuses to build against a local FFmpeg | `local` mode | `I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1`, with the LGPL warning printed |
 | Linking `torch_cpu` runs out of memory next to parallel compiles | all | links run one at a time (CMake job pool `vk_link=1`); a tree configured before this is reconfigured once with `CMAKE_FRESH=1`, and compiled objects are kept |
 

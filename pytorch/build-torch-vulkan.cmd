@@ -6,7 +6,7 @@ setlocal EnableExtensions DisableDelayedExpansion
 if not defined ROOT set "ROOT=%CD%\pytorch-vulkan"
 if not defined TORCH set "TORCH=2.11.0"
 if not defined AUDIO set "AUDIO=2.11.0"
-if not defined CODEC set "CODEC=0.11.1"
+if not defined CODEC set "CODEC=0.17.0"
 if not defined SUFFIX set "SUFFIX=vulkan"
 if not defined PYS set "PYS=3.12"
 if not defined PKGS set "PKGS=torch torchaudio torchcodec"
@@ -135,7 +135,7 @@ echo   -l, --list              what this machine can build now
 echo   --pkgs "torch ..."      packages to build                                            [PKGS]    default: %PKGS%
 echo   --torch VER             default: %TORCH%                                               [TORCH]
 echo   --torchaudio VER        default: %AUDIO%                                               [AUDIO]
-echo   --torchcodec VER        default: %CODEC%                                               [CODEC]
+echo   --torchcodec VER        default: %CODEC%, 0.12+ works with every torch 2.11 or newer   [CODEC]
 echo   --py "3.10 3.12"        Python versions from uv, one full torch build each            [PYS]     default: %PYS%
 echo   --suffix TAG            local version tag, e.g. %TORCH%+%SUFFIX%                         [SUFFIX]  default: %SUFFIX%
 echo   --root DIR              sources, venvs and wheels                                     [ROOT]    default: .\pytorch-vulkan
@@ -283,9 +283,9 @@ call :ff_ok "%FFDIR%\bin\" && goto :rf_path
 if not "%INSTALL_FFMPEG%"=="1" (echo [vk-build] no torchcodec-compatible shared FFmpeg on PATH - torchcodec will not load, see --help & exit /b 0)
 set "FFARCH=win64"
 if "%HOSTA%"=="arm64" set "FFARCH=winarm64"
-for %%b in (8.1 8.0 7.1) do call :ff_try btbn %%b && goto :rf_path
+for %%b in (9.0 8.1 8.0 7.1) do call :ff_try btbn %%b && goto :rf_path
 if "%HOSTA%"=="arm64" goto :rf_none
-for %%b in (8.0.1 8.0 7.1.1 7.1) do call :ff_try gyan %%b && goto :rf_path
+for %%b in (9.0 8.0.1 8.0 7.1.1 7.1) do call :ff_try gyan %%b && goto :rf_path
 :rf_none
 echo [vk-build] WARNING: could not fetch a torchcodec-compatible FFmpeg - torchcodec will not load until one is on PATH
 exit /b 0
@@ -323,7 +323,7 @@ if not defined FFAVC exit /b 1
 set "FFAVC=%FFAVC:avcodec-=%"
 if exist "%FFCMAKE%" goto :fo_cmake
 if %FFAVC% LSS 58 exit /b 1
-if %FFAVC% GTR 62 exit /b 1
+if %FFAVC% GTR 63 exit /b 1
 exit /b 0
 :fo_cmake
 findstr /c:"STREQUAL \"%FFAVC%\"" "%FFCMAKE%" >nul
@@ -584,11 +584,14 @@ set "BUILT=%BUILT% %WHL%"
 exit /b 0
 :build_torchcodec
 if "%CMODE%"=="skip" (echo [vk-build] skipping torchcodec: no prebuilt FFmpeg for %TARGET% and pkg-config finds no local one - see --help & exit /b 0)
-"%PY%" -m pip install -q pybind11 || exit /b 1
+rem torchcodec >= 0.12 builds with scikit-build-core (no build isolation here, so it must be in the venv)
+"%PY%" -m pip install -q pybind11 scikit-build-core || exit /b 1
 rem torchcodec builds in minutes: always configure fresh, a cached CMake keeps the Python and the FFmpeg it found first
 if exist "%SRC%\torchcodec\build" rmdir /s /q "%SRC%\torchcodec\build"
 setlocal
 set "BUILD_VERSION=%CODEC%+%SUFFIX%"
+rem torchcodec >= 0.12 also builds image decoders, each one required; audio/video only unless TORCHCODEC_BUILD_IMAGE=1
+if not defined TORCHCODEC_BUILD_IMAGE set "TORCHCODEC_BUILD_IMAGE=0"
 rem torchcodec's CMake does find_package(pybind11), which never looks inside a pip-installed pybind11
 set "pybind11_ROOT="
 set "PBOUT=%TEMP%\vk_pybind11_%RANDOM%.txt"
