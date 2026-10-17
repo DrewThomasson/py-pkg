@@ -362,8 +362,10 @@ call :can_add_clang || exit /b 0
 echo [zonos2] adding clang-cl (C++ Clang tools for Windows) to the Visual Studio in %VSPATH% - accept the UAC prompt, then
 echo [zonos2] the Visual Studio Installer works in the background for a few minutes
 rem a quiet modify must run elevated from the start (setup.exe exits 5007 otherwise): start it elevated through
-rem PowerShell and wait for it. 0 and 3010 (reboot advised, not needed for the compiler) are success
-powershell -NoProfile -c "$q=[char]34;try{$p=Start-Process -FilePath '%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe' -ArgumentList ('modify --installPath '+$q+'%VSPATH%'+$q+' --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --quiet --norestart --wait') -Verb RunAs -Wait -PassThru}catch{Write-Host '[zonos2] the UAC prompt was declined';exit 1};if($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010){Write-Host ('[zonos2] the Visual Studio Installer exited with '+$p.ExitCode);exit 1};exit 0"
+rem PowerShell and wait for it and the processes it starts (Start-Process -Wait; setup.exe has no --wait, only the
+rem vs_buildtools bootstrapper does). 0 and 3010 (reboot advised, not needed for the compiler) are success
+set "VSCOMPS=--add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
+call :vs_modify
 call :llvm_path
 where clang-cl >nul 2>&1 && exit /b 0
 rem no ( ) block here: VSPATH holds "(x86)"
@@ -373,6 +375,10 @@ exit /b 0
 :ec_noclang
 echo [zonos2] ERROR: clang-cl is still missing after the Visual Studio modify - was the UAC prompt declined? Add "C++ Clang Compiler for Windows" in the Visual Studio Installer, or build only the CUDA targets
 exit /b 1
+:vs_modify
+rem adds the components in VSCOMPS to the Visual Studio in VSPATH, elevated (one UAC prompt)
+powershell -NoProfile -c "$q=[char]34;try{$p=Start-Process -FilePath '%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe' -ArgumentList ('modify --installPath '+$q+'%VSPATH%'+$q+' %VSCOMPS% --quiet --norestart') -Verb RunAs -Wait -PassThru}catch{Write-Host '[zonos2] the UAC prompt was declined';exit 1};if($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010){Write-Host ('[zonos2] the Visual Studio Installer exited with '+$p.ExitCode);exit 1};exit 0"
+exit /b 0
 :install_bt
 where cl >nul 2>&1 && where clang-cl >nul 2>&1 && exit /b 0
 set "VSCOMPS=--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
@@ -382,7 +388,7 @@ if not defined VSPATH if defined VSINSTALLDIR set "VSPATH=%VSINSTALLDIR:~0,-1%"
 if not defined VSPATH goto :bt_winget
 if not exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe" goto :bt_winget
 echo [zonos2] adding C++ and clang-cl to the Visual Studio in %VSPATH% - a UAC prompt may appear
-"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe" modify --installPath "%VSPATH%" %VSCOMPS% --quiet --norestart
+call :vs_modify
 goto :bt_check
 :bt_winget
 echo [zonos2] installing Visual Studio 2022 Build Tools with C++ and clang-cl - several GB, a UAC prompt may appear
