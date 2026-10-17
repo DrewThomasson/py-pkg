@@ -359,8 +359,11 @@ rem the CPU and Vulkan targets need clang-cl: add the C++ Clang tools to the Vis
 rem installer (it asks for admin rights through UAC), then pick clang-cl up from that Visual Studio
 where clang-cl >nul 2>&1 && exit /b 0
 call :can_add_clang || exit /b 0
-echo [zonos2] adding clang-cl (C++ Clang tools for Windows) to the Visual Studio in %VSPATH% - a UAC prompt may appear
-"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe" modify --installPath "%VSPATH%" --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --quiet --norestart
+echo [zonos2] adding clang-cl (C++ Clang tools for Windows) to the Visual Studio in %VSPATH% - accept the UAC prompt, then
+echo [zonos2] the Visual Studio Installer works in the background for a few minutes
+rem a quiet modify must run elevated from the start (setup.exe exits 5007 otherwise): start it elevated through
+rem PowerShell and wait for it. 0 and 3010 (reboot advised, not needed for the compiler) are success
+powershell -NoProfile -c "$q=[char]34;try{$p=Start-Process -FilePath '%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe' -ArgumentList ('modify --installPath '+$q+'%VSPATH%'+$q+' --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --quiet --norestart --wait') -Verb RunAs -Wait -PassThru}catch{Write-Host '[zonos2] the UAC prompt was declined';exit 1};if($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010){Write-Host ('[zonos2] the Visual Studio Installer exited with '+$p.ExitCode);exit 1};exit 0"
 call :llvm_path
 where clang-cl >nul 2>&1 && exit /b 0
 rem no ( ) block here: VSPATH holds "(x86)"
