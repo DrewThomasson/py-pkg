@@ -81,13 +81,14 @@ echo   --jobs N                  parallel compile jobs        [JOBS]      all co
 echo   --clean                   delete build-^<target^> after packing  [CLEAN=1]
 echo   --cuda12 / --cuda13 VER   CUDA releases used           [CUDA12 / CUDA13]   12.8.1 / 13.0.2
 echo   --archs12 / --archs13 "LIST"  CUDA architectures       [ARCHS12 / ARCHS13]
-echo   --no-install              install nothing: no Vulkan SDK, no CUDA download  [INSTALL=0]
-echo   --install-buildtools      install Visual Studio 2022 Build Tools with C++ and clang-cl through winget
+echo   --no-install              install nothing: no clang-cl, no Vulkan SDK, no CUDA download  [INSTALL=0]
+echo   --install-buildtools      no Visual Studio yet: install the 2022 Build Tools with C++ and clang-cl via winget
 echo   NVCC_ALLOW_UNSUPPORTED=1  let nvcc accept a Visual Studio newer than its CUDA release supports
 echo.
 echo Needs
 echo   every target: git, curl and PowerShell (both part of Windows 10+), Visual Studio 2022 C++ build tools
-echo   cpu and vulkan: the "C++ Clang tools for Windows" component of Visual Studio (clang-cl)
+echo   cpu and vulkan: the "C++ Clang tools for Windows" component of Visual Studio, added by this script when
+echo     missing through the Visual Studio Installer - one UAC prompt
 echo   vulkan: the LunarG Vulkan SDK, installed by this script when missing
 echo   cuda12 / cuda13: the CUDA compiler, runtime and cuBLAS, downloaded by this script into --tools from NVIDIA's
 echo     redistributable archives - checksums verified, no installer, no driver, no admin rights, about 3 GB each
@@ -108,7 +109,8 @@ exit /b 0
 :install_note
 set "INOTE="
 if defined MISS exit /b 0
-if /i "%~1"=="windows-x64-vulkan" if not exist "%VULKAN_SDK%\Bin\glslc.exe" set "INOTE= - installs the Vulkan SDK first"
+if /i not "%~1"=="windows-x64-cuda12" if /i not "%~1"=="windows-x64-cuda13" where clang-cl >nul 2>&1 || set "INOTE= - adds clang-cl to Visual Studio first"
+if /i "%~1"=="windows-x64-vulkan" if not exist "%VULKAN_SDK%\Bin\glslc.exe" set "INOTE=%INOTE% - installs the Vulkan SDK first"
 if /i "%~1"=="windows-x64-cuda12" if not exist "%TOOLS%\cuda-%CUDA12%\bin\nvcc.exe" set "INOTE= - downloads CUDA %CUDA12% first"
 if /i "%~1"=="windows-x64-cuda13" if not exist "%TOOLS%\cuda-%CUDA13%\bin\nvcc.exe" set "INOTE= - downloads CUDA %CUDA13% first"
 exit /b 0
@@ -120,7 +122,7 @@ where curl >nul 2>&1 || set "MISS=%MISS% curl,"
 where cl >nul 2>&1 || set "MISS=%MISS% Visual Studio C++ build tools,"
 if /i "%~1"=="windows-x64-cuda12" goto :miss_cuda12
 if /i "%~1"=="windows-x64-cuda13" goto :miss_cuda13
-where clang-cl >nul 2>&1 || set "MISS=%MISS% clang-cl - C++ Clang tools for Windows,"
+where clang-cl >nul 2>&1 || call :can_add_clang || set "MISS=%MISS% clang-cl - C++ Clang tools for Windows,"
 if /i not "%~1"=="windows-x64-vulkan" exit /b 0
 if "%INSTALL%"=="1" exit /b 0
 if not exist "%VULKAN_SDK%\Bin\glslc.exe" set "MISS=%MISS% LunarG Vulkan SDK,"
@@ -135,6 +137,9 @@ exit /b 0
 set "TARGETS=%ALL%"
 if defined ONLY set "TARGETS=%ONLY%"
 if "%INSTALL_BT%"=="1" call :install_bt || exit /b 1
+set "NEEDCLANG=0"
+for %%t in (%TARGETS%) do if /i not "%%t"=="windows-x64-cuda12" if /i not "%%t"=="windows-x64-cuda13" set "NEEDCLANG=1"
+if "%NEEDCLANG%"=="1" call :ensure_clang || exit /b 1
 for %%t in (%TARGETS%) do call :check_target %%t || exit /b 1
 call :tools_env || exit /b 1
 call :source || exit /b 1
@@ -342,6 +347,29 @@ if not exist "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" exit /b 0
 echo [zonos2] loading the Visual Studio C++ environment from %VSPATH%
 call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul
 exit /b 0
+:can_add_clang
+rem clang-cl can be added: installing is allowed and this Visual Studio has its installer
+if not "%INSTALL%"=="1" exit /b 1
+if not defined VSPATH if defined VSINSTALLDIR set "VSPATH=%VSINSTALLDIR:~0,-1%"
+if not defined VSPATH exit /b 1
+if not exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe" exit /b 1
+exit /b 0
+:ensure_clang
+rem the CPU and Vulkan targets need clang-cl: add the C++ Clang tools to the Visual Studio found here, with its own
+rem installer (it asks for admin rights through UAC), then pick clang-cl up from that Visual Studio
+where clang-cl >nul 2>&1 && exit /b 0
+call :can_add_clang || exit /b 0
+echo [zonos2] adding clang-cl (C++ Clang tools for Windows) to the Visual Studio in %VSPATH% - a UAC prompt may appear
+"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe" modify --installPath "%VSPATH%" --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --quiet --norestart
+call :llvm_path
+where clang-cl >nul 2>&1 && exit /b 0
+rem no ( ) block here: VSPATH holds "(x86)"
+if not exist "%VSPATH%\VC\Tools\Llvm\x64\bin\clang-cl.exe" goto :ec_noclang
+set "PATH=%VSPATH%\VC\Tools\Llvm\x64\bin;%PATH%"
+exit /b 0
+:ec_noclang
+echo [zonos2] ERROR: clang-cl is still missing after the Visual Studio modify - was the UAC prompt declined? Add "C++ Clang Compiler for Windows" in the Visual Studio Installer, or build only the CUDA targets
+exit /b 1
 :install_bt
 where cl >nul 2>&1 && where clang-cl >nul 2>&1 && exit /b 0
 set "VSCOMPS=--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
