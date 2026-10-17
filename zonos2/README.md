@@ -1,8 +1,10 @@
-# build-zonos2.sh
+# build-zonos2.sh / build-zonos2.cmd
 
 Builds the `zonos2-server` packages that ebook2audiobook (e2a) uses for its Zonos engine (ZONOS2, from [Zyphra's zonos2.cpp](https://github.com/Zyphra/zonos2.cpp)), for the machines Zyphra ships no build for, or ships one that old computers cannot run.
 
 The script looks at the machine it runs on and builds every package that machine can make. Each package is packed as `zonos2-server-<target>.tar.gz` (`.zip` for Windows) in the `zonos2.cpp` folder. The packages are published in the `zonos2` release of [ROBERT-MCDOWELL/py-pkg](https://github.com/ROBERT-MCDOWELL/py-pkg/releases/tag/zonos2) under these same names, and `lib/conf_models.py` in e2a points to them there.
+
+Two scripts, one per kind of build machine: `build-zonos2.sh` on Linux and macOS, `build-zonos2.cmd` on Windows x64 for the Windows packages (CPU, Vulkan, CUDA 12 and CUDA 13), built natively with clang-cl and MSVC + nvcc. The Windows CPU targets of `build-zonos2.sh` (zig cross-builds) stay until the `.cmd` builds are published.
 
 ## Quick start
 
@@ -11,6 +13,16 @@ The script looks at the machine it runs on and builds every package that machine
 ./build-zonos2.sh            # build all of it
 ./build-zonos2.sh --help     # every target and option
 ```
+
+On Windows x64, from any command prompt:
+
+```bat
+build-zonos2.cmd --list
+build-zonos2.cmd
+build-zonos2.cmd --help
+```
+
+`build-zonos2.cmd` loads the Visual Studio C++ environment itself and installs what is missing: the LunarG Vulkan SDK, and the CUDA 12 and 13 compilers, runtimes and cuBLAS from NVIDIA's redistributable archives (checksums verified, no installer, no driver, side by side under `zonos2-tools`). No GPU is needed for any build. `--install-buildtools` installs Visual Studio 2022 Build Tools with C++ and clang-cl through winget.
 
 `--list` shows each target of this machine and whether it can be built right now. On an x86_64 Linux machine with all tools installed:
 
@@ -32,7 +44,9 @@ Run without options, the script builds every target that is `ready` and skips th
 | Machine | How it builds | Targets |
 |---|---|---|
 | Linux aarch64 (e.g. a JetPack 5 Jetson Xavier) | one Docker container per target | Jetson, aarch64 CPU, aarch64 CUDA servers |
-| Linux x86_64 | zig (installed with pip), no Docker | x64 CPU and Vulkan, Windows CPU |
+| Linux x86_64 | zig (installed with pip) | x64 CPU and Vulkan, Windows CPU |
+| Linux x86_64 | Docker, NVIDIA's CUDA images | x64 CUDA 12 and CUDA 13, runtime bundled |
+| Windows x64 | `build-zonos2.cmd`: clang-cl, MSVC + nvcc | Windows CPU, Vulkan, CUDA 12 and CUDA 13, runtime bundled |
 | Intel Mac | native clang | macOS Intel CPU |
 
 Apple Silicon has nothing to build: e2a uses Zyphra's own `macos-arm64-metal` package there. Other CPU types (32-bit ARM, RISC-V, PowerPC) are not supported.

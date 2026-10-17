@@ -28,7 +28,11 @@ Targets
     linux-x64-cpu-sse42    CPU, SSE4.2, no AVX (2008+), same
     linux-x64-vulkan       GPU via Vulkan (discrete or integrated), CPU part AVX2, + libvulkan.so.1
     windows-x64-cpu-avx2   Windows 10+, system DLLs only (UCRT, no VC++ runtime)
-    windows-x64-cpu-sse42  same, SSE4.2
+    windows-x64-cpu-sse42  same, SSE4.2 (the Windows packages move to build-zonos2.cmd, built natively on Windows)
+  on x86_64 Linux, with Docker (NVIDIA's CUDA images, no GPU needed):
+    linux-x64-cuda12       GPU via CUDA 12 (Maxwell to Blackwell, driver >= 525), CPU part SSE4.2, glibc >= 2.31,
+                           CUDA runtime + cuBLAS bundled in lib/ (nothing but the NVIDIA driver on the user's machine)
+    linux-x64-cuda13       GPU via CUDA 13 (Turing to Blackwell, driver >= 580), CPU part SSE4.2, glibc >= 2.35, same
   on an Intel Mac:
     macos-x86_64           CPU (Accelerate), AVX2 baseline, macOS >= 11.0
     macos-x86_64-vulkan    GPU via Vulkan through MoltenVK (AMD/Intel GPUs with Metal), CPU part AVX2, macOS >= 11.0,
@@ -44,8 +48,8 @@ Options (each one also works as the environment variable in brackets)
   --jobs N               parallel compile jobs                             [JOBS]   default: 2 (CUDA needs ~2 GB each)
   --tag vX.Y.Z           zonos2.cpp release to build                       [TAG]    default: v0.5.2
   --src DIR              zonos2.cpp source tree, cloned if missing         [SRC]    default: ./zonos2.cpp
-  --bundle               put cuBLAS/cudart in lib/ of the aarch64 CUDA     [BUNDLE=1] default: not bundled, the
-                         packages (~700 MB instead of the binary alone)    target's CUDA or e2a's PyTorch CUDA is used
+  --no-bundle            leave cuBLAS/cudart out of lib/ of the CUDA       [BUNDLE=0] default: bundled, so users need
+                         packages (aarch64 and x64, not Jetson)            only the NVIDIA driver (~700 MB unpacked)
   --archs12 / --archs13 "LIST"  CUDA architectures of linux-aarch64-cuda12 / -cuda13  [ARCHS12 / ARCHS13]
   --keep-images          keep the Docker images this run pulled           [KEEP_IMAGES=1] default: removed after
                                                                            each target (images already there stay)
@@ -53,7 +57,7 @@ Options (each one also works as the environment variable in brackets)
 
 Needs
   every machine: git, curl, python3 (uv is installed if missing)
-  aarch64 targets: Docker (through sudo unless run as root)
+  aarch64 and linux-x64-cuda* targets: Docker (through sudo unless run as root), no GPU needed
   linux-x64-vulkan: Vulkan headers, SPIR-V headers, glslc, libvulkan.so, and more than 4 GB of RAM
     Fedora: dnf install vulkan-headers vulkan-loader-devel glslc spirv-headers-devel
     Ubuntu: apt-get install libvulkan-dev glslc spirv-headers
@@ -80,6 +84,7 @@ while [ $# -gt 0 ]; do
     --tag) TAG="$2"; shift;;
     --src) SRC="$2"; shift;;
     --bundle) BUNDLE=1;;
+    --no-bundle) BUNDLE=0;;
     --archs12) ARCHS12="$2"; shift;;
     --archs13) ARCHS13="$2"; shift;;
     --keep-images) KEEP_IMAGES=1;;
@@ -106,7 +111,7 @@ done
 HOST="$(uname -s)-$(uname -m)"
 case "$HOST" in
   Linux-aarch64) ALL="jetson5-sm72-sm87 jetson6-sm87 jetson7-sm87-sm110 linux-aarch64 linux-aarch64-v82 linux-aarch64-cuda13 linux-aarch64-cuda12";;
-  Linux-x86_64) ALL="linux-x64-cpu-avx2 linux-x64-cpu-sse42 linux-x64-vulkan windows-x64-cpu-avx2 windows-x64-cpu-sse42";;
+  Linux-x86_64) ALL="linux-x64-cpu-avx2 linux-x64-cpu-sse42 linux-x64-vulkan linux-x64-cuda12 linux-x64-cuda13 windows-x64-cpu-avx2 windows-x64-cpu-sse42";;
   Darwin-x86_64) ALL="macos-x86_64 macos-x86_64-vulkan";;
   Darwin-arm64) ALL="macos-arm64";;
   *) echo "no zonos2 targets for a $HOST machine (supported: Linux x86_64, Linux aarch64, Mac)"; exit 1;;
@@ -128,7 +133,7 @@ macho_floor(){ # oldest macOS a Mach-O (its x86_64 / arm64 slice $2) starts on
 }
 missing(){ # prints why target $1 cannot be built here, nothing when it can
   case "$1" in
-    jetson*|linux-aarch64*) command -v docker >/dev/null || echo "Docker is not installed";;
+    jetson*|linux-aarch64*|linux-x64-cuda*) command -v docker >/dev/null || echo "Docker is not installed";;
     linux-x64-vulkan)
       local m=""
       [ -f /usr/include/vulkan/vulkan.h ] || m="$m Vulkan headers,"
@@ -235,7 +240,13 @@ apt-get update -qq && apt-get install -y -qq git curl ca-certificates build-esse
 git config --global --add safe.directory '*'
 curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null; export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 uv venv -q /opt/zbuild && . /opt/zbuild/bin/activate && uv pip install -q cmake ninja patchelf
-FLAGS="-G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=$CPU_ARCH"
+# CPU_ARCH: an ARM -march for aarch64, or x86-sse42 for the x64 CUDA builds (the GPU runs the model, so the oldest
+# x86-64 level ggml has keeps every CPU of an NVIDIA machine in)
+if [ "$CPU_ARCH" = x86-sse42 ]; then
+  FLAGS="-G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_SSE42=ON -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX512=OFF"
+else
+  FLAGS="-G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=$CPU_ARCH"
+fi
 # portable builds: no OpenMP and libstdc++ linked in, so only libc/libm are needed (Jetson builds keep JetPack's)
 [ "$PORTABLE" = 1 ] && FLAGS="$FLAGS -DGGML_OPENMP=OFF -DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++\ -static-libgcc"
 # NCCL is multi-GPU only and not part of a JetPack install: left out
@@ -305,8 +316,12 @@ for T in $ONLY; do
     jetson7-sm87-sm110) docker_target "$T" nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04 armv8.2-a+dotprod+fp16 "87;110" 0 0;;
     linux-aarch64) docker_target "$T" ubuntu:20.04 armv8-a "" 1 0;;
     linux-aarch64-v82) docker_target "$T" ubuntu:20.04 armv8.2-a+dotprod+fp16 "" 1 0;;
-    linux-aarch64-cuda13) docker_target "$T" nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu22.04 armv8.2-a+fp16 "${ARCHS13:-75-real;80-real;86-real;87-real;89-real;90-real;100-real;110-real;120-real;121}" 1 "${BUNDLE:-0}";;
-    linux-aarch64-cuda12) docker_target "$T" nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu22.04 armv8.2-a+fp16 "${ARCHS12:-75-real;80-real;86-real;89-real;90-real;100-real;120}" 1 "${BUNDLE:-0}";;
+    linux-aarch64-cuda13) docker_target "$T" nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu22.04 armv8.2-a+fp16 "${ARCHS13:-75-real;80-real;86-real;87-real;89-real;90-real;100-real;110-real;120-real;121}" 1 "${BUNDLE:-1}";;
+    linux-aarch64-cuda12) docker_target "$T" nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu22.04 armv8.2-a+fp16 "${ARCHS12:-75-real;80-real;86-real;89-real;90-real;100-real;120}" 1 "${BUNDLE:-1}";;
+    # x64 CUDA: the runtime and cuBLAS go in lib/ (BUNDLE=0 to leave them out), so users need only the NVIDIA driver.
+    # Every generation each CUDA release builds for, real code, plus PTX of the newest for later GPUs
+    linux-x64-cuda12) docker_target "$T" nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu20.04 x86-sse42 "${ARCHS12_X64:-50-real;52-real;60-real;61-real;70-real;75-real;80-real;86-real;89-real;90-real;100-real;120}" 1 "${BUNDLE:-1}";;
+    linux-x64-cuda13) docker_target "$T" nvcr.io/nvidia/cuda:13.0.2-devel-ubuntu22.04 x86-sse42 "${ARCHS13_X64:-75-real;80-real;86-real;89-real;90-real;100-real;120}" 1 "${BUNDLE:-1}";;
     linux-x64-cpu-avx2) zig_target "$T" linux "$AVX2";;
     linux-x64-cpu-sse42) zig_target "$T" linux "$SSE42";;
     linux-x64-vulkan)
