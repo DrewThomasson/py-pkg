@@ -102,7 +102,8 @@ call :missing %1
 set "NOTE=ready"
 if defined MISS set "NOTE=missing:%MISS:~0,-1% - see --help"
 call :install_note %1
-echo   %1   %NOTE%%INOTE%
+set "NAME=%~1                         "
+echo   %NAME:~0,24% %NOTE%%INOTE%
 exit /b 0
 :install_note
 set "INOTE="
@@ -343,8 +344,19 @@ call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul
 exit /b 0
 :install_bt
 where cl >nul 2>&1 && where clang-cl >nul 2>&1 && exit /b 0
+set "VSCOMPS=--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
+rem a Visual Studio already here (VSPATH, from vs_env): add the missing components to it with its own installer;
+rem winget would only report the Build Tools as already installed
+if not defined VSPATH if defined VSINSTALLDIR set "VSPATH=%VSINSTALLDIR:~0,-1%"
+if not defined VSPATH goto :bt_winget
+if not exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe" goto :bt_winget
+echo [zonos2] adding C++ and clang-cl to the Visual Studio in %VSPATH% - a UAC prompt may appear
+"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe" modify --installPath "%VSPATH%" %VSCOMPS% --quiet --norestart
+goto :bt_check
+:bt_winget
 echo [zonos2] installing Visual Studio 2022 Build Tools with C++ and clang-cl - several GB, a UAC prompt may appear
 winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --silent --accept-package-agreements --accept-source-agreements --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --includeRecommended"
+:bt_check
 call :vs_env
 call :llvm_path
 where cl >nul 2>&1 && where clang-cl >nul 2>&1 && exit /b 0
