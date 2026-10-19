@@ -711,13 +711,13 @@ set "PROBE=%TEMP%\vk_probe_%RANDOM%.py"
 >>"%PROBE%" echo(if torch.is_vulkan_available():
 >>"%PROBE%" echo(    x=torch.randn(1,8,64)
 >>"%PROBE%" echo(    tests=dict(
->>"%PROBE%" echo(        softmax=lambda:torch.softmax(x.vulkan(),-1).cpu(),
->>"%PROBE%" echo(        gelu=lambda:F.gelu(x.vulkan()).cpu(),
->>"%PROBE%" echo(        layer_norm=lambda:F.layer_norm(x.vulkan(),[64]).cpu(),
->>"%PROBE%" echo(        matmul=lambda:torch.matmul(torch.randn(64,64).vulkan(),torch.randn(64,64).vulkan()).cpu(),
->>"%PROBE%" echo(        conv1d=lambda:F.conv1d(x.vulkan(),torch.randn(8,8,3)).cpu(),
->>"%PROBE%" echo(        stft=lambda:torch.stft(torch.randn(16000).vulkan(),n_fft=1024,return_complex=True).cpu(),
->>"%PROBE%" echo(        multinomial=lambda:torch.multinomial(torch.rand(4,100).vulkan(),1).cpu(),
+>>"%PROBE%" echo(        softmax=lambda:torch.softmax(x.to('vulkan'),-1).cpu(),
+>>"%PROBE%" echo(        gelu=lambda:F.gelu(x.to('vulkan')).cpu(),
+>>"%PROBE%" echo(        layer_norm=lambda:F.layer_norm(x.to('vulkan'),[64]).cpu(),
+>>"%PROBE%" echo(        matmul=lambda:torch.matmul(torch.randn(64,64).to('vulkan'),torch.randn(64,64).to('vulkan')).cpu(),
+>>"%PROBE%" echo(        conv1d=lambda:F.conv1d(x.to('vulkan'),torch.randn(8,8,3)).cpu(),
+>>"%PROBE%" echo(        stft=lambda:torch.stft(torch.randn(16000).to('vulkan'),n_fft=1024,return_complex=True).cpu(),
+>>"%PROBE%" echo(        multinomial=lambda:torch.multinomial(torch.rand(4,100).to('vulkan'),1).cpu(),
 >>"%PROBE%" echo(    )
 >>"%PROBE%" echo(    for name,fn in tests.items():
 >>"%PROBE%" echo(        try:

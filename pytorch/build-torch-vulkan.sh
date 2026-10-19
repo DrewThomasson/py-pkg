@@ -542,13 +542,13 @@ for mod in ['torchaudio','torchcodec']:
 if torch.is_vulkan_available():
     x=torch.randn(1,8,64)
     tests=dict(
-        softmax=lambda:torch.softmax(x.vulkan(),-1).cpu(),
-        gelu=lambda:F.gelu(x.vulkan()).cpu(),
-        layer_norm=lambda:F.layer_norm(x.vulkan(),[64]).cpu(),
-        matmul=lambda:torch.matmul(torch.randn(64,64).vulkan(),torch.randn(64,64).vulkan()).cpu(),
-        conv1d=lambda:F.conv1d(x.vulkan(),torch.randn(8,8,3)).cpu(),
-        stft=lambda:torch.stft(torch.randn(16000).vulkan(),n_fft=1024,return_complex=True).cpu(),
-        multinomial=lambda:torch.multinomial(torch.rand(4,100).vulkan(),1).cpu(),
+        softmax=lambda:torch.softmax(x.to('vulkan'),-1).cpu(),
+        gelu=lambda:F.gelu(x.to('vulkan')).cpu(),
+        layer_norm=lambda:F.layer_norm(x.to('vulkan'),[64]).cpu(),
+        matmul=lambda:torch.matmul(torch.randn(64,64).to('vulkan'),torch.randn(64,64).to('vulkan')).cpu(),
+        conv1d=lambda:F.conv1d(x.to('vulkan'),torch.randn(8,8,3)).cpu(),
+        stft=lambda:torch.stft(torch.randn(16000).to('vulkan'),n_fft=1024,return_complex=True).cpu(),
+        multinomial=lambda:torch.multinomial(torch.rand(4,100).to('vulkan'),1).cpu(),
     )
     for name,fn in tests.items():
         try:
