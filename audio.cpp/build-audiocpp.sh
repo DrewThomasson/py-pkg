@@ -251,18 +251,22 @@ pack(){ # $1 target, $2 OS (linux/macos); the folder audiocpp-server-<target>/ h
 # ---- Docker targets: one container per target, the image removed afterwards unless it was already there
 INNER=$(cat <<'EOF'
 export DEBIAN_FRONTEND=noninteractive
+# the build folders stay the host user's even when a step fails (else root-owned: sudo to remove them)
+trap 'chown -R "$HOST_ID" "$B" "$D" 2>/dev/null || true' EXIT
 apt-get update -qq && apt-get install -y -qq git curl ca-certificates build-essential >/dev/null
 git config --global --add safe.directory '*'
 curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null; export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 uv venv -q /opt/abuild && . /opt/abuild/bin/activate && uv pip install -q cmake ninja patchelf
 # audio.cpp is built with GCC 13 upstream: an Ubuntu 20.04 image (glibc 2.31, linux-aarch64*, linux-x64-cuda12) gets
-# GCC 13 from the ubuntu-toolchain-r PPA (CUDA 12.8 takes it as nvcc's host compiler). libstdc++ is linked in either
-# way, so the user's system libstdc++ does not matter
+# GCC 13 from the ubuntu-toolchain-r PPA. libstdc++ is linked in either way, so the user's system libstdc++ does not
+# matter. nvcc must use it too (CUDAHOSTCXX, CUDA 12.8 takes GCC 13): with its default host compiler (the image's
+# GCC 9), CMake puts GCC 9's library folder on the link line and the static libstdc++ comes from GCC 9, which lacks
+# what GCC 13's headers call (undefined std::__throw_bad_array_new_length)
 if [ "$(gcc -dumpversion | cut -d. -f1)" -lt 11 ]; then
   apt-get install -y -qq software-properties-common gpg-agent >/dev/null
   add-apt-repository -y ppa:ubuntu-toolchain-r/test >/dev/null
   apt-get update -qq && apt-get install -y -qq gcc-13 g++-13 >/dev/null
-  export CC=gcc-13 CXX=g++-13
+  export CC=gcc-13 CXX=g++-13 CUDAHOSTCXX=g++-13
 fi
 # no OpenMP (libgomp is missing on slim and old systems: ggml's own thread pool instead), no model manager (e2a
 # downloads the models: no OpenSSL / BoringSSL), libstdc++ and libgcc linked in, so only libc/libm/libdl are needed
@@ -296,7 +300,6 @@ if [ -n "$ARCHS" ]; then
   echo "--- $T CUDA / NCCL libs (libcuda.so.1 is the driver, not found in Docker is expected):"
   env -u LD_LIBRARY_PATH ldd "$D/audiocpp_server" | grep -E 'cud|cublas|nccl' || true
 fi
-chown -R "$HOST_ID" "$B" "$D"
 EOF
 )
 docker_target(){ # $1 target, $2 image, $3 CPU arch, $4 CUDA archs ("" = CPU only), $5 bundle (1/0)
