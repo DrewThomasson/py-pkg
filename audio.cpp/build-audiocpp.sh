@@ -19,14 +19,15 @@ The machine type decides the targets; a target whose tools are missing is skippe
 --only stops instead).
 
 Targets
-  on aarch64 Linux (e.g. a JetPack 5 Xavier), built in Docker:
-    jetson5-sm72-sm87      JetPack 5.x, CUDA 11.4: Xavier + Orin (nvcc keeps JetPack's GCC 9, the rest GCC 13)
+  on aarch64 Linux (e.g. a Jetson), built in Docker:
     jetson6-sm87           JetPack 6.x, CUDA 12.6: Orin
     jetson7-sm87-sm110     JetPack 7.x, CUDA 13: Thor (7.0+), Orin (7.2+)
     linux-aarch64          CPU, ARMv8.0, any aarch64 Linux, glibc >= 2.31, only libc/libm/libdl
     linux-aarch64-v82      CPU, ARMv8.2 + dotprod + fp16 (Pi 5, Orin, Graviton2+), same
     linux-aarch64-cuda13   ARM GPU servers, CUDA 13 (driver >= 580): T4 A100 A10 L40 H100 B200 RTX50 Orin Thor GB10
     linux-aarch64-cuda12   same, CUDA 12.8 (driver >= 525), without Orin/Thor/GB10 (only with --only)
+    no JetPack 5 package: audio.cpp needs CUDA 12 or newer (its CMake refuses JetPack 5's CUDA 11.4, whose nvcc fails
+    on its kernels), so Xavier and JetPack 5 Orin run the linux-aarch64 CPU packages (Orin: JetPack 6 for jetson6-sm87)
   on x86_64 Linux, no Docker (zig, installed with pip, compiles for an old glibc):
     linux-x64-cpu-avx2     CPU, AVX2/FMA/F16C (2013+), glibc >= 2.28, only libc/libm/libdl
     linux-x64-cpu-sse42    CPU, SSE4.2, no AVX (2008+), same
@@ -126,7 +127,7 @@ for v in UV_CACHE_DIR ZIG_GLOBAL_CACHE_DIR; do
 done
 HOST="$(uname -s)-$(uname -m)"
 case "$HOST" in
-  Linux-aarch64) ALL="jetson5-sm72-sm87 jetson6-sm87 jetson7-sm87-sm110 linux-aarch64 linux-aarch64-v82 linux-aarch64-cuda13 linux-aarch64-cuda12";;
+  Linux-aarch64) ALL="jetson6-sm87 jetson7-sm87-sm110 linux-aarch64 linux-aarch64-v82 linux-aarch64-cuda13 linux-aarch64-cuda12";;
   Linux-x86_64) ALL="linux-x64-cpu-avx2 linux-x64-cpu-sse42 linux-x64-vulkan linux-x64-cuda12 linux-x64-cuda13";;
   Darwin-x86_64) ALL="macos-x86_64 macos-x86_64-vulkan";;
   Darwin-arm64) ALL="macos-arm64";;
@@ -254,17 +255,13 @@ apt-get update -qq && apt-get install -y -qq git curl ca-certificates build-esse
 git config --global --add safe.directory '*'
 curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null; export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 uv venv -q /opt/abuild && . /opt/abuild/bin/activate && uv pip install -q cmake ninja patchelf
-# audio.cpp is built with GCC 13 upstream: an older image (Ubuntu 20.04, JetPack 5) gets GCC 13 from the
-# ubuntu-toolchain-r PPA. libstdc++ is linked in either way, so the user's system libstdc++ does not matter
-CUDA_HOST=""
+# audio.cpp is built with GCC 13 upstream: an Ubuntu 20.04 image (glibc 2.31, linux-aarch64*, linux-x64-cuda12) gets
+# GCC 13 from the ubuntu-toolchain-r PPA (CUDA 12.8 takes it as nvcc's host compiler). libstdc++ is linked in either
+# way, so the user's system libstdc++ does not matter
 if [ "$(gcc -dumpversion | cut -d. -f1)" -lt 11 ]; then
   apt-get install -y -qq software-properties-common gpg-agent >/dev/null
   add-apt-repository -y ppa:ubuntu-toolchain-r/test >/dev/null
   apt-get update -qq && apt-get install -y -qq gcc-13 g++-13 >/dev/null
-  # CUDA 11.x (JetPack 5) takes no host compiler newer than GCC 10: nvcc keeps the image's own
-  if [ -n "$ARCHS" ] && [ "$(/usr/local/cuda/bin/nvcc --version | grep -o 'release [0-9]*' | grep -o '[0-9]*$')" -lt 12 ]; then
-    CUDA_HOST="-DCMAKE_CUDA_HOST_COMPILER=$(command -v g++)"
-  fi
   export CC=gcc-13 CXX=g++-13
 fi
 # no OpenMP (libgomp is missing on slim and old systems: ggml's own thread pool instead), no model manager (e2a
@@ -279,7 +276,7 @@ else
 fi
 # NCCL is multi-GPU only and not part of a JetPack install: left out
 if [ -n "$ARCHS" ]; then
-  FLAGS="$FLAGS -DENGINE_ENABLE_CUDA=ON -DENGINE_ENABLE_CUDA_GRAPHS=ON -DGGML_CUDA_NCCL=OFF -DCMAKE_CUDA_ARCHITECTURES='$ARCHS' -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc $CUDA_HOST"
+  FLAGS="$FLAGS -DENGINE_ENABLE_CUDA=ON -DENGINE_ENABLE_CUDA_GRAPHS=ON -DGGML_CUDA_NCCL=OFF -DCMAKE_CUDA_ARCHITECTURES='$ARCHS' -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc"
 else
   FLAGS="$FLAGS -DENGINE_ENABLE_CUDA=OFF"
 fi
@@ -312,11 +309,12 @@ docker_target(){ # $1 target, $2 image, $3 CPU arch, $4 CUDA archs ("" = CPU onl
   pack "$1" linux
 }
 # ---- x86_64: zig wrappers (CMake wants one executable per tool), explicit x86 levels
+# the host tools (cmake, ninja, ziglang) go in ~/zbuild, the venv build-zonos2.sh makes: one venv for both scripts
 zig_setup(){
   command -v uv >/dev/null || { curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; command -v uv >/dev/null || { echo "uv could not be installed"; exit 1; }; }
-  [ -x "$HOME/abuild/bin/python" ] || uv venv -q "$HOME/abuild"
-  uv pip install -q --python "$HOME/abuild/bin/python" cmake ninja ziglang
-  export PATH="$HOME/abuild/bin:$PATH" PYTHON="$HOME/abuild/bin/python"
+  [ -x "$HOME/zbuild/bin/python" ] || uv venv -q "$HOME/zbuild"
+  uv pip install -q --python "$HOME/zbuild/bin/python" cmake ninja ziglang
+  export PATH="$HOME/zbuild/bin:$PATH" PYTHON="$HOME/zbuild/bin/python"
   Z="$SRC/.zig"
   mkdir -p "$Z"
   printf '#!/bin/sh\nexec "%s" -m ziglang cc -target x86_64-linux-gnu.2.28 "$@"\n' "$PYTHON" > "$Z/linux-cc"
@@ -345,7 +343,6 @@ case "$HOST" in Linux-x86_64) zig_setup;; esac
 for T in $ONLY; do
   echo "=== $T"
   case "$T" in
-    jetson5-sm72-sm87) docker_target "$T" nvcr.io/nvidia/l4t-jetpack:r35.4.1 armv8.2-a+fp16 "72;87" 0;;
     jetson6-sm87) docker_target "$T" nvcr.io/nvidia/l4t-jetpack:r36.4.0 armv8.2-a+dotprod+fp16 "87" 0;;
     jetson7-sm87-sm110) docker_target "$T" nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04 armv8.2-a+dotprod+fp16 "87;110" 0;;
     linux-aarch64) docker_target "$T" ubuntu:20.04 armv8-a "" 0;;
@@ -385,9 +382,9 @@ for T in $ONLY; do
         *) MFLAGS="$AVX2 -DENGINE_ENABLE_METAL=OFF -DENGINE_ENABLE_VULKAN=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0";;
       esac
       command -v uv >/dev/null || { curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; command -v uv >/dev/null || { echo "uv could not be installed"; exit 1; }; }
-      [ -x "$HOME/abuild/bin/python" ] || uv venv -q "$HOME/abuild"
-      uv pip install -q --python "$HOME/abuild/bin/python" cmake ninja
-      export PATH="$HOME/abuild/bin:$PATH"
+      [ -x "$HOME/zbuild/bin/python" ] || uv venv -q "$HOME/zbuild"
+      uv pip install -q --python "$HOME/zbuild/bin/python" cmake ninja
+      export PATH="$HOME/zbuild/bin:$PATH"
       cmake -B "build-$T" $COMMON $MFLAGS
       cmake --build "build-$T" --target audiocpp_server -j"$JOBS"
       d="audiocpp-server-$T"

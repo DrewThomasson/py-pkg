@@ -10,9 +10,12 @@ audio.cpp's own packages.
 | linux-x64-vulkan | x86_64 Linux (zig) | same |
 | linux-x64-cuda12, linux-x64-cuda13 | x86_64 Linux (Docker) | theirs (Colab) needs the system's CUDA and OpenSSL |
 | linux-aarch64, linux-aarch64-v82, linux-aarch64-cuda12, linux-aarch64-cuda13 | aarch64 Linux (Docker) | none |
-| jetson5-sm72-sm87, jetson6-sm87, jetson7-sm87-sm110 | aarch64 Linux (Docker) | none |
+| jetson6-sm87, jetson7-sm87-sm110 | aarch64 Linux (Docker) | none |
 | macos-arm64, macos-x86_64 | Mac | theirs need macOS 13.3, these start on 11.0 |
 | macos-x86_64-vulkan | Intel Mac | none (theirs is CPU only on Intel) |
+
+No JetPack 5 package: audio.cpp needs CUDA 12 or newer and refuses JetPack 5's CUDA 11.4, so Xavier and JetPack 5
+Orin run the linux-aarch64 CPU packages (Orin can move to JetPack 6 for jetson6-sm87).
 
 Windows needs nothing: audio.cpp's own CPU, Vulkan and CUDA 12.4 / 13.3 packages (with their cudart zips) cover it.
 
