@@ -20,7 +20,7 @@ Orin run the linux-aarch64 CPU packages (Orin can move to JetPack 6 for jetson6-
 Windows needs nothing: audio.cpp's own CPU, Vulkan and CUDA 12.4 / 13.3 packages (with their cudart zips) cover it.
 
 What every package has: `audiocpp_server` (static, only libc/libm/libdl on Linux, no OpenMP, no OpenSSL), the CUDA
-runtime and cuBLAS in `lib/` for the CUDA ones (driver only for users), `model_specs/`, `LICENSE`, `LICENSE-ggml`,
+runtime, cuBLAS and cuFFT in `lib/` for the CUDA ones (driver only for users), `model_specs/`, `LICENSE`, `LICENSE-ggml`,
 `NOTICE`. By default only the model families e2a uses are compiled in (`--models e2a`, half the build);
 `--models full` builds every family.
 
@@ -35,6 +35,8 @@ gh release upload audiocpp --clobber audio.cpp/audiocpp-server-*.tar.gz
 
 `--tag` must match e2a's `audiocpp_version` (lib/conf_models.py). Once a package is uploaded, remove
 `"enabled": False` from its entry in e2a's `audiocpp_packages`; e2a downloads it once per URL.
+
+Jetson packages use JetPack's own CUDA libraries (nothing bundled).
 
 Licenses: audio.cpp Apache-2.0, ggml MIT, cpp-httplib / cJSON / libyaml / utf8proc MIT, sentencepiece Apache-2.0; the
 CUDA libraries are redistributed under the NVIDIA CUDA Toolkit EULA, the Mac Vulkan loader and MoltenVK under

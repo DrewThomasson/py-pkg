@@ -34,7 +34,7 @@ Targets
     linux-x64-vulkan       GPU via Vulkan (discrete or integrated), CPU part AVX2, + libvulkan.so.1
   on x86_64 Linux, with Docker (NVIDIA's CUDA images, no GPU needed):
     linux-x64-cuda12       GPU via CUDA 12 (Maxwell to Blackwell, driver >= 525), CPU part SSE4.2, glibc >= 2.31,
-                           CUDA runtime + cuBLAS bundled in lib/ (nothing but the NVIDIA driver on the user's machine)
+                           CUDA runtime + cuBLAS + cuFFT bundled in lib/ (nothing but the NVIDIA driver on the user's machine)
     linux-x64-cuda13       GPU via CUDA 13 (Turing to Blackwell, driver >= 580), CPU part SSE4.2, glibc >= 2.35, same
   on an Intel Mac:
     macos-x86_64           CPU (Accelerate), AVX2 baseline, macOS >= 11.0 (audio.cpp's own: CPU only, macOS 13.3)
@@ -54,7 +54,7 @@ Options (each one also works as the environment variable in brackets)
   --src DIR              audio.cpp source tree, cloned if missing          [SRC]    default: ./audio.cpp
   --models e2a|full|"m1,m2"  audio.cpp model families compiled in          [MODELS] default: e2a (the families e2a's
                          engines, ASR and Seed-VC use, about half the build); full = every family, like audio.cpp's
-  --no-bundle            leave cuBLAS/cudart out of lib/ of the CUDA       [BUNDLE=0] default: bundled, so users need
+  --no-bundle            leave cudart/cuBLAS/cuFFT out of lib/ of the CUDA [BUNDLE=0] default: bundled, so users need
                          packages (aarch64 and x64, not Jetson)            only the NVIDIA driver (~700 MB unpacked)
   --archs12 / --archs13 "LIST"  CUDA architectures of linux-aarch64-cuda12 / -cuda13  [ARCHS12 / ARCHS13]
   --keep-images          keep the Docker images this run pulled           [KEEP_IMAGES=1] default: removed after
@@ -232,7 +232,7 @@ pack(){ # $1 target, $2 OS (linux/macos); the folder audiocpp-server-<target>/ h
     case "$t" in linux-x64-cpu-*|linux-x64-vulkan) echo "Built with zig (LLVM libc++, Apache-2.0 WITH LLVM-exception)";; esac
     case "$t" in
       macos-*-vulkan) echo "lib/: Vulkan loader and MoltenVK (LunarG Vulkan SDK, Khronos), Apache License 2.0";;
-      *) [ -d "$d/lib" ] && echo "lib/: NVIDIA CUDA runtime and cuBLAS, redistributed under the NVIDIA CUDA Toolkit EULA";;
+      *) [ -d "$d/lib" ] && echo "lib/: NVIDIA CUDA runtime, cuBLAS and cuFFT, redistributed under the NVIDIA CUDA Toolkit EULA";;
     esac
     true
   } > "$d/NOTICE"
@@ -251,6 +251,8 @@ pack(){ # $1 target, $2 OS (linux/macos); the folder audiocpp-server-<target>/ h
 # ---- Docker targets: one container per target, the image removed afterwards unless it was already there
 INNER=$(cat <<'EOF'
 export DEBIAN_FRONTEND=noninteractive
+# a dropped connection (the PPA's server, a mirror) is retried instead of failing the whole target
+echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
 # the build folders stay the host user's even when a step fails (else root-owned: sudo to remove them)
 trap 'chown -R "$HOST_ID" "$B" "$D" 2>/dev/null || true' EXIT
 apt-get update -qq && apt-get install -y -qq git curl ca-certificates build-essential >/dev/null
@@ -292,7 +294,8 @@ cp "$B/bin/audiocpp_server" "$D/"
 strip --strip-debug "$D/audiocpp_server"
 if [ -n "$ARCHS" ] && [ "$BUNDLE" = 1 ]; then
   mkdir -p "$D/lib"
-  for l in $(ldd "$B/bin/audiocpp_server" | awk '/libcudart|libcublas/{print $3}'); do cp -L "$l" "$D/lib/"; done
+  # audio.cpp links cuFFT too (its CUDA iSTFT), unlike ggml alone
+  for l in $(ldd "$B/bin/audiocpp_server" | awk '/libcudart|libcublas|libcufft/{print $3}'); do cp -L "$l" "$D/lib/"; done
   patchelf --set-rpath '$ORIGIN/lib' "$D/audiocpp_server"
 fi
 if [ -n "$ARCHS" ]; then
@@ -352,7 +355,7 @@ for T in $ONLY; do
     linux-aarch64-v82) docker_target "$T" ubuntu:20.04 armv8.2-a+dotprod+fp16 "" 0;;
     linux-aarch64-cuda13) docker_target "$T" nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu22.04 armv8.2-a+fp16 "${ARCHS13:-75-real;80-real;86-real;87-real;89-real;90-real;100-real;110-real;120-real;121}" "${BUNDLE:-1}";;
     linux-aarch64-cuda12) docker_target "$T" nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu22.04 armv8.2-a+fp16 "${ARCHS12:-75-real;80-real;86-real;89-real;90-real;100-real;120}" "${BUNDLE:-1}";;
-    # x64 CUDA: the runtime and cuBLAS go in lib/ (BUNDLE=0 to leave them out), so users need only the NVIDIA driver.
+    # x64 CUDA: the runtime, cuBLAS and cuFFT go in lib/ (BUNDLE=0 to leave them out), so users need only the NVIDIA driver.
     # Every generation each CUDA release builds for, real code, plus PTX of the newest for later GPUs
     linux-x64-cuda12) docker_target "$T" nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu20.04 x86-sse42 "${ARCHS12_X64:-50-real;52-real;60-real;61-real;70-real;75-real;80-real;86-real;89-real;90-real;100-real;120}" "${BUNDLE:-1}";;
     linux-x64-cuda13) docker_target "$T" nvcr.io/nvidia/cuda:13.0.2-devel-ubuntu22.04 x86-sse42 "${ARCHS13_X64:-75-real;80-real;86-real;89-real;90-real;100-real;120}" "${BUNDLE:-1}";;
