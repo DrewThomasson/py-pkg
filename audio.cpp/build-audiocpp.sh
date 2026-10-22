@@ -24,10 +24,15 @@ Targets
     jetson7-sm87-sm110     JetPack 7.x, CUDA 13: Thor (7.0+), Orin (7.2+)
     linux-aarch64          CPU, ARMv8.0, any aarch64 Linux, glibc >= 2.31, only libc/libm/libdl
     linux-aarch64-v82      CPU, ARMv8.2 + dotprod + fp16 (Pi 5, Orin, Graviton2+), same
+    linux-aarch64-vulkan   GPU via Vulkan: Jetson Xavier / JetPack 5 (no CUDA package there, see below), and any
+                           aarch64 Linux with a Vulkan driver; CPU part ARMv8.2 + fp16 (Xavier, A55/A76+), glibc >=
+                           2.31, + libvulkan.so.1. Its glslc (shaderc, ~270 files) and Vulkan headers are built /
+                           fetched once in the container and kept in .tools-linux-aarch64-vulkan
     linux-aarch64-cuda13   ARM GPU servers, CUDA 13 (driver >= 580): T4 A100 A10 L40 H100 B200 RTX50 Orin Thor GB10
     linux-aarch64-cuda12   same, CUDA 12.8 (driver >= 525), without Orin/Thor/GB10 (only with --only)
-    no JetPack 5 package: audio.cpp needs CUDA 12 or newer (its CMake refuses JetPack 5's CUDA 11.4, whose nvcc fails
-    on its kernels), so Xavier and JetPack 5 Orin run the linux-aarch64 CPU packages (Orin: JetPack 6 for jetson6-sm87)
+    no JetPack 5 CUDA package: audio.cpp needs CUDA 12 or newer (its CMake refuses JetPack 5's CUDA 11.4, whose nvcc
+    fails on its kernels), so Xavier and JetPack 5 Orin get their GPU through linux-aarch64-vulkan (JetPack's own
+    Vulkan driver), else the linux-aarch64 CPU package (Orin: JetPack 6 for jetson6-sm87)
   on x86_64 Linux, no Docker (zig, installed with pip, compiles for an old glibc):
     linux-x64-cpu-avx2     CPU, AVX2/FMA/F16C (2013+), glibc >= 2.28, only libc/libm/libdl
     linux-x64-cpu-sse42    CPU, SSE4.2, no AVX (2008+), same
@@ -105,6 +110,9 @@ SRC=${SRC:-$PWD/audio.cpp}
 JOBS=${JOBS:-2}
 MODELS=${MODELS:-e2a}
 VER=${TAG#v}
+# glslc and Vulkan headers of linux-aarch64-vulkan (same release month)
+SHADERC_TAG=${SHADERC_TAG:-v2026.3}
+VKHEADERS_TAG=${VKHEADERS_TAG:-vulkan-sdk-1.4.357.0}
 # the model families compiled in: e2a's engines (TTS_ENGINES), its reference ASR (qwen3_asr) and its voice conversion
 # (seed_vc); their dependencies (miocodec, qwen3_forced_aligner) are linked by audio.cpp itself. moss holds
 # moss_tts_local and moss_tts_nano
@@ -127,7 +135,7 @@ for v in UV_CACHE_DIR ZIG_GLOBAL_CACHE_DIR; do
 done
 HOST="$(uname -s)-$(uname -m)"
 case "$HOST" in
-  Linux-aarch64) ALL="jetson6-sm87 jetson7-sm87-sm110 linux-aarch64 linux-aarch64-v82 linux-aarch64-cuda13 linux-aarch64-cuda12";;
+  Linux-aarch64) ALL="jetson6-sm87 jetson7-sm87-sm110 linux-aarch64 linux-aarch64-v82 linux-aarch64-vulkan linux-aarch64-cuda13 linux-aarch64-cuda12";;
   Linux-x86_64) ALL="linux-x64-cpu-avx2 linux-x64-cpu-sse42 linux-x64-vulkan linux-x64-cuda12 linux-x64-cuda13";;
   Darwin-x86_64) ALL="macos-x86_64 macos-x86_64-vulkan";;
   Darwin-arm64) ALL="macos-arm64";;
@@ -254,7 +262,7 @@ export DEBIAN_FRONTEND=noninteractive
 # a dropped connection (the PPA's server, a mirror) is retried instead of failing the whole target
 echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
 # the build folders stay the host user's even when a step fails (else root-owned: sudo to remove them)
-trap 'chown -R "$HOST_ID" "$B" "$D" 2>/dev/null || true' EXIT
+trap 'chown -R "$HOST_ID" "$B" "$D" "/src/.tools-$T" 2>/dev/null || true' EXIT
 apt-get update -qq && apt-get install -y -qq git curl ca-certificates build-essential >/dev/null
 git config --global --add safe.directory '*'
 curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null; export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
@@ -269,6 +277,29 @@ if [ "$(gcc -dumpversion | cut -d. -f1)" -lt 11 ]; then
   add-apt-repository -y ppa:ubuntu-toolchain-r/test >/dev/null
   apt-get update -qq && apt-get install -y -qq gcc-13 g++-13 >/dev/null
   export CC=gcc-13 CXX=g++-13 CUDAHOSTCXX=g++-13
+fi
+# Vulkan (linux-aarch64-vulkan): Ubuntu 20.04 has neither glslc nor Vulkan headers new enough for ggml, so glslc is
+# built from shaderc (with the SPIR-V headers its deps bring) and the headers come from Khronos, both pinned and kept in
+# the source tree (.tools-<target>) for the next run. Only libvulkan.so comes from Ubuntu (ggml loads every Vulkan
+# function through vkGetInstanceProcAddr, so JetPack 5's 1.2 loader is enough at run time)
+VK_FLAGS=""
+if [ "$VULKAN" = 1 ]; then
+  apt-get install -y -qq python3 libvulkan-dev >/dev/null
+  TOOLS="/src/.tools-$T"
+  if [ ! -x "$TOOLS/bin/glslc" ]; then
+    rm -rf "$TOOLS/shaderc" "$TOOLS/shaderc-build" && mkdir -p "$TOOLS/bin"
+    git clone -q --depth 1 -b "$SHADERC_TAG" https://github.com/google/shaderc "$TOOLS/shaderc"
+    (cd "$TOOLS/shaderc" && python3 utils/git-sync-deps)
+    cmake -S "$TOOLS/shaderc" -B "$TOOLS/shaderc-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON -DSHADERC_SKIP_COPYRIGHT_CHECK=ON
+    cmake --build "$TOOLS/shaderc-build" --target glslc_exe -j"$JOBS"
+    cp "$TOOLS/shaderc-build/glslc/glslc" "$TOOLS/bin/glslc"
+  fi
+  if [ ! -f "$TOOLS/include/vulkan/vulkan.hpp" ]; then
+    rm -rf "$TOOLS/vulkan-headers" "$TOOLS/include" && mkdir -p "$TOOLS/include"
+    git clone -q --depth 1 -b "$VKHEADERS_TAG" https://github.com/KhronosGroup/Vulkan-Headers "$TOOLS/vulkan-headers"
+    cp -r "$TOOLS/vulkan-headers/include/vulkan" "$TOOLS/vulkan-headers/include/vk_video" "$TOOLS/shaderc/third_party/spirv-headers/include/spirv" "$TOOLS/include/"
+  fi
+  VK_FLAGS="-DENGINE_ENABLE_VULKAN=ON -DVulkan_INCLUDE_DIR=$TOOLS/include -DVulkan_LIBRARY=$(ls /usr/lib/*-linux-gnu/libvulkan.so | head -1) -DVulkan_GLSLC_EXECUTABLE=$TOOLS/bin/glslc"
 fi
 # no OpenMP (libgomp is missing on slim and old systems: ggml's own thread pool instead), no model manager (e2a
 # downloads the models: no OpenSSL / BoringSSL), libstdc++ and libgcc linked in, so only libc/libm/libdl are needed
@@ -286,7 +317,7 @@ if [ -n "$ARCHS" ]; then
 else
   FLAGS="$FLAGS -DENGINE_ENABLE_CUDA=OFF"
 fi
-eval cmake -B "$B" $FLAGS
+eval cmake -B "$B" $FLAGS $VK_FLAGS
 cmake --build "$B" --target audiocpp_server -j"$JOBS"
 rm -rf "$D" && mkdir -p "$D"
 cp "$B/bin/audiocpp_server" "$D/"
@@ -305,11 +336,12 @@ if [ -n "$ARCHS" ]; then
 fi
 EOF
 )
-docker_target(){ # $1 target, $2 image, $3 CPU arch, $4 CUDA archs ("" = CPU only), $5 bundle (1/0)
+docker_target(){ # $1 target, $2 image, $3 CPU arch, $4 CUDA archs ("" = CPU only), $5 bundle (1/0), $6 Vulkan (1/0)
   local had=0
   $SUDO docker image inspect "$2" >/dev/null 2>&1 && had=1
   $SUDO docker run --rm --runtime runc --security-opt seccomp=unconfined -v "$SRC":/src -w /src \
-    -e T="$1" -e B="build-$1" -e D="audiocpp-server-$1" -e CPU_ARCH="$3" -e ARCHS="$4" -e BUNDLE="$5" \
+    -e T="$1" -e B="build-$1" -e D="audiocpp-server-$1" -e CPU_ARCH="$3" -e ARCHS="$4" -e BUNDLE="$5" -e VULKAN="${6:-0}" \
+    -e SHADERC_TAG="$SHADERC_TAG" -e VKHEADERS_TAG="$VKHEADERS_TAG" \
     -e VER="$VER" -e MODEL_FLAGS="$MODEL_FLAGS" -e JOBS="$JOBS" -e HOST_ID="$(id -u):$(id -g)" "$2" bash -euc "$INNER"
   if [ "$had" = 0 ] && [ "${KEEP_IMAGES:-0}" != 1 ]; then $SUDO docker image rm "$2" >/dev/null && echo "--- removed the Docker image $2"; fi
   pack "$1" linux
@@ -353,6 +385,8 @@ for T in $ONLY; do
     jetson7-sm87-sm110) docker_target "$T" nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04 armv8.2-a+dotprod+fp16 "87;110" 0;;
     linux-aarch64) docker_target "$T" ubuntu:20.04 armv8-a "" 0;;
     linux-aarch64-v82) docker_target "$T" ubuntu:20.04 armv8.2-a+dotprod+fp16 "" 0;;
+    # no dotprod: Xavier's Carmel cores have fp16 arithmetic but not the dot-product instructions
+    linux-aarch64-vulkan) docker_target "$T" ubuntu:20.04 armv8.2-a+fp16 "" 0 1;;
     linux-aarch64-cuda13) docker_target "$T" nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu22.04 armv8.2-a+fp16 "${ARCHS13:-75-real;80-real;86-real;87-real;89-real;90-real;100-real;110-real;120-real;121}" "${BUNDLE:-1}";;
     linux-aarch64-cuda12) docker_target "$T" nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu22.04 armv8.2-a+fp16 "${ARCHS12:-75-real;80-real;86-real;89-real;90-real;100-real;120}" "${BUNDLE:-1}";;
     # x64 CUDA: the runtime, cuBLAS and cuFFT go in lib/ (BUNDLE=0 to leave them out), so users need only the NVIDIA driver.
