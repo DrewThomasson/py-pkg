@@ -650,6 +650,24 @@ if exist "%TB%" rmdir /s /q "%TB%"
 set "PKGDIR="
 for /d %%d in ("%TB%\*") do set "PKGDIR=%%~fd"
 copy /y "%LOADER%" "%PKGDIR%\torch\lib\vulkan-1.dll" >nul || exit /b 1
+rem torch_cpu.dll can link MSVC's LLVM OpenMP runtime (libomp140), which no VC++ redistributable installs on a
+rem user's machine: torch then fails at import ("Error loading shm.dll or one of its dependencies"). Carry it like
+rem vulkan-1.dll, from this toolset's redistributable folder (vcvarsall's VCToolsRedistDir), when torch_cpu.dll
+rem needs it. No ( ) block around the toolset path: it holds "(x86)"
+set "OMPDLL=libomp140.x86_64.dll"
+if "%HOSTA%"=="arm64" set "OMPDLL=libomp140.aarch64.dll"
+where dumpbin >nul 2>&1 || goto :bundle_omp_find
+dumpbin /dependents "%PKGDIR%\torch\lib\torch_cpu.dll" | findstr /i /c:"%OMPDLL%" >nul || goto :bundle_omp_done
+:bundle_omp_find
+set "OMPSRC="
+for /d %%d in ("%VCToolsRedistDir%%HOSTA%\Microsoft.VC*.OpenMP.LLVM") do if exist "%%~fd\%OMPDLL%" set "OMPSRC=%%~fd\%OMPDLL%"
+if defined OMPSRC goto :bundle_omp_copy
+echo [vk-build] ERROR: torch_cpu.dll needs %OMPDLL%, not found in the toolset's redistributable folder %VCToolsRedistDir%%HOSTA%
+exit /b 1
+:bundle_omp_copy
+copy /y "%OMPSRC%" "%PKGDIR%\torch\lib\%OMPDLL%" >nul || exit /b 1
+echo [vk-build] bundled %OMPDLL% into the torch wheel
+:bundle_omp_done
 for %%f in ("%WHL%") do set "WHLNAME=%%~nxf"
 del /q "%WHL%"
 "%PY%" -m wheel pack "%PKGDIR%" -d "%DIST%" >nul || exit /b 1
