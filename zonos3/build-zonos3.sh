@@ -194,12 +194,14 @@ git -C "$SRC" submodule update -q --init --depth 1 servers/ggml/ggml third_party
 for f in servers/ggml/ggml/CMakeLists.txt third_party/zyphra-textnorm/Cargo.toml; do
   [ -f "$SRC/$f" ] || { echo "$SRC/$f is missing and the submodule could not be fetched: remove $SRC and run again"; exit 1; }
 done
-# macOS: libc++ has the floating-point std::to_chars from macOS 13.3 only (its code is in the system libc++.dylib), and
-# the macos-* packages start on macOS 11.0, whatever macOS the build Mac runs. zonos3.cpp's one use, float_decimal() in
-# src/server/util.cpp (the shortest decimal of a float, read back as a double), goes through snprintf instead, with
-# to_chars' rule for its plain format: the shorter of the shortest round-trip %f and %e forms, %f on a tie (the same
-# value as std::to_chars for every float: checked against libstdc++ on every 97th float bit pattern and 10M others)
-if [ "$(uname -s)" = Darwin ] && grep -q 'std::to_chars' "$SRC/servers/ggml/src/server/util.cpp"; then
+# The floating-point std::to_chars is missing from GCC 9's libstdc++ (GCC 11+: the Ubuntu 20.04 images of jetson5,
+# linux-aarch64, linux-aarch64-v82 and linux-x64-cuda12 have GCC 9) and from libc++ before macOS 13.3 (its code is in the
+# system libc++.dylib, the macos-* packages start on macOS 11.0, whatever macOS the build Mac runs). zonos3.cpp's one
+# use, float_decimal() in src/server/util.cpp (the shortest decimal of a float, read back as a double), goes through
+# snprintf instead on every target, with to_chars' rule for its plain format: the shorter of the shortest round-trip %f
+# and %e forms, %f on a tie (the same value as std::to_chars for every float: checked against libstdc++ on every 97th
+# float bit pattern and 10M others)
+if grep -q 'std::to_chars' "$SRC/servers/ggml/src/server/util.cpp"; then
   python3 - "$SRC/servers/ggml/src/server/util.cpp" <<'EOF'
 import sys
 p = sys.argv[1]
@@ -208,8 +210,9 @@ old = '''    char buf[64];
     const auto r = std::to_chars(buf, buf + sizeof buf - 1, v);
     *r.ptr = 0;
     return strtod(buf, nullptr);'''
-new = '''    // e2a build (py-pkg build-zonos3.sh): libc++'s floating-point to_chars needs macOS 13.3, the packages start on
-    // macOS 11.0. Its plain format through snprintf: the shorter of the shortest round-trip %f and %e forms, %f on a tie
+new = '''    // e2a build (py-pkg build-zonos3.sh): the floating-point to_chars needs GCC 11 / macOS 13.3, the packages are built
+    // with GCC 9 and for macOS 11.0. Its plain format through snprintf: the shorter of the shortest round-trip %f and %e
+    // forms, %f on a tie
     if (!std::isfinite(v)) return v;
     char e[64], f[128];
     for (int p = 0; p <= 8; ++p) {
@@ -222,9 +225,9 @@ new = '''    // e2a build (py-pkg build-zonos3.sh): libc++'s floating-point to_c
     }
     return strtod(strlen(f) <= strlen(e) ? f : e, nullptr);'''
 if old not in s or '#include <charconv>\n' not in s:
-    sys.exit(p + ': float_decimal() changed in this ZONOS3-Mini commit, update the macOS to_chars patch of build-zonos3.sh')
+    sys.exit(p + ': float_decimal() changed in this ZONOS3-Mini commit, update the to_chars patch of build-zonos3.sh')
 if s.count('std::to_chars') != 1:
-    sys.exit(p + ': another std::to_chars use, extend the macOS to_chars patch of build-zonos3.sh')
+    sys.exit(p + ': another std::to_chars use, extend the to_chars patch of build-zonos3.sh')
 s = s.replace(old, new).replace('#include <charconv>\n', '#include <charconv>\n#include <cmath>\n', 1)
 open(p, 'w').write(s)
 EOF
