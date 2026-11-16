@@ -1,6 +1,6 @@
 # build-zonos2.sh / build-zonos2.cmd
 
-Builds the `zonos2-server` packages that ebook2audiobook (e2a) uses for its Zonos engine (ZONOS2, from [Zyphra's zonos2.cpp](https://github.com/Zyphra/zonos2.cpp)), for the machines Zyphra ships no build for, or ships one that old computers cannot run.
+Builds the `zonos2-server` packages that ebook2audiobook (e2a) uses for its zonos2 engine (ZONOS2, from [Zyphra's zonos2.cpp](https://github.com/Zyphra/zonos2.cpp)), for the machines Zyphra ships no build for, or ships one that old computers cannot run.
 
 The script looks at the machine it runs on and builds every package that machine can make. Each package is packed as `zonos2-server-<target>.tar.gz` (`.zip` for Windows) in the `zonos2.cpp` folder. The packages are published in the `zonos2` release of [ROBERT-MCDOWELL/py-pkg](https://github.com/ROBERT-MCDOWELL/py-pkg/releases/tag/zonos2) under these same names, and `lib/conf_models.py` in e2a points to them there.
 
@@ -146,7 +146,7 @@ zonos2-server-<target>/
 ## How e2a uses the packages
 
 - e2a picks a package per machine from `lib/conf_models.py`: the platform, the CPU's features (AVX2 or SSE4.2 on x64, dot-product on ARM), the JetPack version and Jetson board, and the glibc version.
-- It downloads the chosen package once, into `lib/classes/tts_engines/venvs/zonos/<package>`, and uses that copy from then on: it never checks for or downloads a newer build. A user gets a rebuilt package only by deleting that folder.
+- It downloads the chosen package once, into `lib/classes/tts_engines/venvs/zonos2/<package>`, and uses that copy from then on: it never checks for or downloads a newer build. A user gets a rebuilt package only by deleting that folder.
 - On a GPU, e2a tries the GPU packages first. If one cannot be downloaded or started (not uploaded yet, no `libvulkan.so.1`, ...), it shows a warning and falls back to the next GPU package, then to the matching CPU package.
 - CUDA packages built without `--bundle` use the machine's CUDA runtime, or the NVIDIA libraries that e2a's own CUDA PyTorch installed into its Python environment.
 - An entry with `"enabled": False` in `lib/conf_models.py` (a package not uploaded yet) is skipped. Remove that flag once the package is uploaded.
