@@ -19,7 +19,7 @@ Targets
     jetson5-sm72-sm87      JetPack 5.x, CUDA 11.4: Xavier + Orin
     jetson6-sm87           JetPack 6.x, CUDA 12.6: Orin
     jetson7-sm87-sm110     JetPack 7.x, CUDA 13: Thor (7.0+), Orin (7.2+)
-    linux-aarch64          CPU, ARMv8.0, any aarch64 Linux, glibc >= 2.31, only libc/libm
+    linux-aarch64          CPU, ARMv8.0, any aarch64 Linux, glibc >= 2.30, only libc/libm
     linux-aarch64-v82      CPU, ARMv8.2 + dotprod + fp16 (Pi 5, Orin, Graviton2+), same
     linux-aarch64-cuda13   ARM GPU servers, CUDA 13 (driver >= 580): T4 A100 A10 L40 H100 B200 RTX50 Orin Thor GB10
     linux-aarch64-cuda12   same, CUDA 12.8 (driver >= 525), without Orin/Thor/GB10 (only with --only)
@@ -28,9 +28,9 @@ Targets
     linux-x64-cpu-sse42    CPU, SSE4.2, no AVX (2008+), same
     linux-x64-vulkan       GPU via Vulkan (discrete or integrated), CPU part AVX2, + libvulkan.so.1
   on x86_64 Linux, with Docker (NVIDIA's CUDA images, no GPU needed):
-    linux-x64-cuda12       GPU via CUDA 12 (Maxwell to Blackwell, driver >= 525), CPU part SSE4.2, glibc >= 2.31,
+    linux-x64-cuda12       GPU via CUDA 12 (Maxwell to Blackwell, driver >= 525), CPU part SSE4.2, glibc >= 2.30,
                            CUDA runtime + cuBLAS bundled in lib/ (nothing but the NVIDIA driver on the user's machine)
-    linux-x64-cuda13       GPU via CUDA 13 (Turing to Blackwell, driver >= 580), CPU part SSE4.2, glibc >= 2.35, same
+    linux-x64-cuda13       GPU via CUDA 13 (Turing to Blackwell, driver >= 580), CPU part SSE4.2, glibc >= 2.34, same
   on an Intel Mac:
     macos-x86_64           CPU (Accelerate), AVX2 baseline, macOS >= 11.0
     macos-x86_64-vulkan    GPU via Vulkan through MoltenVK (AMD/Intel GPUs with Metal), CPU part AVX2, macOS >= 11.0,

@@ -56,7 +56,7 @@ Other CPU types (32-bit ARM, RISC-V, PowerPC) are not supported.
 | `jetson5-sm72-sm87` | JetPack 5.x, CUDA 11.4 | Xavier + Orin |
 | `jetson6-sm87` | JetPack 6.x, CUDA 12.6 | Orin |
 | `jetson7-sm87-sm110` | JetPack 7.x, CUDA 13 | Thor (7.0+), Orin (7.2+) |
-| `linux-aarch64` | CPU, ARMv8.0, any aarch64 Linux | glibc >= 2.31, only `libc`/`libm` needed |
+| `linux-aarch64` | CPU, ARMv8.0, any aarch64 Linux | glibc >= 2.30, only `libc`/`libm` needed |
 | `linux-aarch64-v82` | CPU, ARMv8.2 + dotprod + fp16 (Pi 5, Orin, Graviton2+) | same |
 | `linux-aarch64-cuda13` | ARM GPU servers, CUDA 13, driver >= 580 | T4, A100, A10, L40, H100, B200, RTX 50, Orin, Thor, GB10 |
 | `linux-aarch64-cuda12` | same, CUDA 12.8, driver >= 525 | without Orin/Thor/GB10; only built with `--only` |
@@ -75,8 +75,8 @@ zig compiles against an old glibc (2.28) from a modern system and links its C++ 
 
 | Target | For | Notes |
 |---|---|---|
-| `linux-x64-cuda12` | CUDA 12, Maxwell to Blackwell, driver >= 525 | CPU part SSE4.2, glibc >= 2.31, cudart + cuBLAS in `lib/` |
-| `linux-x64-cuda13` | CUDA 13, Turing to Blackwell, driver >= 580 | CPU part SSE4.2, glibc >= 2.35, same |
+| `linux-x64-cuda12` | CUDA 12, Maxwell to Blackwell, driver >= 525 | CPU part SSE4.2, glibc >= 2.30, cudart + cuBLAS in `lib/` |
+| `linux-x64-cuda13` | CUDA 13, Turing to Blackwell, driver >= 580 | CPU part SSE4.2, glibc >= 2.34, same |
 
 ### On Windows x64, `build-zonos3.cmd`
 
