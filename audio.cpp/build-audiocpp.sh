@@ -2,7 +2,8 @@
 # Builds the e2a audiocpp-server packages (audio.cpp, 0xShug0) that audio.cpp's own releases leave out: Linux aarch64
 # (Jetson, ARM CPU, ARM CUDA servers, in Docker), Linux x86_64 for old distros (CPU and Vulkan with zig, CUDA in
 # Docker), Intel Macs and Apple Silicon Macs older than macOS 13.3.
-# Windows needs nothing: audio.cpp's own Windows CPU, Vulkan and CUDA 12 / 13 packages already cover it.
+# Windows x64 needs nothing: audio.cpp's own Windows CPU, Vulkan and CUDA 12 / 13 packages already cover it. Windows
+# arm64, which they leave out: build-audiocpp.cmd, on a Windows arm64 machine.
 # Run ./build-audiocpp.sh --help for the targets and options, --list for what this machine can build now.
 set -euo pipefail
 usage(){
@@ -14,7 +15,8 @@ audiocpp-server-<target>.tar.gz in the audio.cpp folder, named like e2a download
 ROBERT-MCDOWELL/py-pkg (upload with: gh release upload audiocpp --clobber ...).
 Only what audio.cpp's own releases leave out: their Linux packages need glibc 2.38, GLIBCXX_3.4.32 and libgomp, their
 Linux CUDA server needs the system's CUDA and OpenSSL, their Mac packages need macOS 13.3, and there is no Linux ARM
-or Jetson package. Windows is fully covered by them (CPU, Vulkan, CUDA 12.4 / 13.3 with their cudart zips).
+or Jetson package. Windows x64 is covered by them (CPU, Vulkan, CUDA 12.4 / 13.3 with their cudart zips); Windows
+arm64 is not: build-audiocpp.cmd builds it, on a Windows arm64 machine.
 The machine type decides the targets; a target whose tools are missing is skipped with the reason (an explicit
 --only stops instead).
 
@@ -54,9 +56,10 @@ Options (each one also works as the environment variable in brackets)
   -l, --list             list this machine's targets and whether each one can be built now, then exit
   --only "T1 T2 ..."     build only these targets                          [ONLY]   default: all of this machine's
   --jobs N               parallel compile jobs                             [JOBS]   default: 2 (CUDA needs ~2 GB each)
-  --tag vX.Y.Z           audio.cpp release to build (= e2a's               [TAG]    default: v0.9.2
+  --tag vX.Y.Z           audio.cpp release to build (= e2a's               [TAG]    default: v0.9.5
                          audiocpp_version)
-  --src DIR              audio.cpp source tree, cloned if missing          [SRC]    default: ./audio.cpp
+  --src DIR              audio.cpp source tree, cloned if missing, else    [SRC]    default: ./audio.cpp
+                         moved to --tag (local changes dropped)
   --models e2a|full|"m1,m2"  audio.cpp model families compiled in          [MODELS] default: e2a (the families e2a's
                          engines, ASR and Seed-VC use, about half the build); full = every family, like audio.cpp's
   --no-bundle            leave cudart/cuBLAS/cuFFT out of lib/ of the CUDA [BUNDLE=0] default: bundled, so users need
@@ -105,7 +108,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-TAG=${TAG:-v0.9.2}
+TAG=${TAG:-v0.9.5}
 SRC=${SRC:-$PWD/audio.cpp}
 JOBS=${JOBS:-2}
 MODELS=${MODELS:-e2a}
@@ -139,7 +142,7 @@ case "$HOST" in
   Linux-x86_64) ALL="linux-x64-cpu-avx2 linux-x64-cpu-sse42 linux-x64-vulkan linux-x64-cuda12 linux-x64-cuda13";;
   Darwin-x86_64) ALL="macos-x86_64 macos-x86_64-vulkan";;
   Darwin-arm64) ALL="macos-arm64";;
-  *) echo "no audiocpp targets for a $HOST machine (supported: Linux x86_64, Linux aarch64, Mac; Windows: audio.cpp's own packages)"; exit 1;;
+  *) echo "no audiocpp targets for a $HOST machine (supported: Linux x86_64, Linux aarch64, Mac; Windows arm64: build-audiocpp.cmd; Windows x64: audio.cpp's own packages)"; exit 1;;
 esac
 # the macos-* packages target macOS 11.0: a Mac older than that has no SDK for it
 if [ "$(uname -s)" = Darwin ]; then
@@ -204,8 +207,16 @@ else
   done
   [ -n "$ONLY" ] || { echo "nothing can be built on this machine yet (see --list)"; exit 1; }
 fi
-# no submodule needed: the only one (external/audio.cpp-server-frontends) is the optional web frontends, off by default
-[ -d "$SRC" ] || git clone --depth 1 -b "$TAG" https://github.com/0xShug0/audio.cpp "$SRC"
+# no submodule needed: the only one (external/audio.cpp-server-frontends) is the optional web frontends, off by default.
+# audio.cpp at TAG: cloned, or an existing tree moved to TAG (a tree of an earlier run would stay at its release, and the
+# package carry another audio.cpp than its version says); --force drops the to_chars patch, applied again below
+if [ ! -d "$SRC" ]; then
+  git clone --depth 1 -b "$TAG" https://github.com/0xShug0/audio.cpp "$SRC"
+elif [ -d "$SRC/.git" ] && [ "$(git -C "$SRC" rev-parse HEAD 2>/dev/null)" != "$(git -C "$SRC" rev-list -n 1 "$TAG" 2>/dev/null)" ]; then
+  echo "moving $SRC to audio.cpp $TAG"
+  git -C "$SRC" fetch -q --depth 1 origin tag "$TAG"
+  git -C "$SRC" checkout -q --force "$TAG"
+fi
 [ -f "$SRC/CMakeLists.txt" ] || { echo "$SRC is not an audio.cpp source tree: remove it and run again"; exit 1; }
 # the only floating-point std::to_chars (debug trace formatting) is what holds audio.cpp's Mac packages on macOS 13.3,
 # libc++ has it from there; GCC has it from 11. The ostringstream fallback below it formats the same value

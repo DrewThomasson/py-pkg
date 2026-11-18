@@ -14,17 +14,25 @@ audio.cpp's own packages.
 | jetson6-sm87, jetson7-sm87-sm110 | aarch64 Linux (Docker) | none |
 | macos-arm64, macos-x86_64 | Mac | theirs need macOS 13.3, these start on 11.0 |
 | macos-x86_64-vulkan | Intel Mac | none (theirs is CPU only on Intel) |
+| windows-arm64-cpu, windows-arm64-cpu-v82 | Windows arm64 (`build-audiocpp.cmd`) | none: theirs are Windows x64 only |
+| windows-arm64-vulkan | Windows arm64 (`build-audiocpp.cmd`) | none; the GPU path of Snapdragon (Adreno) PCs |
 
 No JetPack 5 package: audio.cpp needs CUDA 12 or newer and refuses JetPack 5's CUDA 11.4, so Xavier and JetPack 5
 Orin get their GPU through linux-aarch64-vulkan (JetPack's Vulkan driver), else linux-aarch64 on CPU (Orin can move to
 JetPack 6 for jetson6-sm87).
 
-Windows needs nothing: audio.cpp's own CPU, Vulkan and CUDA 12.4 / 13.3 packages (with their cudart zips) cover it.
+Windows x64 needs nothing: audio.cpp's own CPU, Vulkan and CUDA 12.4 / 13.3 packages (with their cudart zips) cover it.
+Windows arm64 has no audio.cpp package (their releases, up to v0.9.5, are Windows x64 only): `build-audiocpp.cmd` builds
+it natively on a Windows arm64 machine with Visual Studio's ARM64 clang-cl (ggml takes no MSVC for its ARM code), the
+LunarG arm64 Vulkan SDK for the Vulkan one, and the static C runtime (system DLLs only). It fixes a NEON macro of
+audio.cpp's ggml that clang-cl builds wrongly (`ggml_vld1q_u32`, the MSVC form, `{a, c, 0, 0}` instead of
+`{a, b, c, d}` in the IQ3 / IQ1_M kernels) with ggml's later fix. CPU part: ARMv8.0, or ARMv8.2 + dotprod + fp16 for
+-v82 (Snapdragon 850 and newer); ARMv8.0 under Vulkan.
 
-What every package has: `audiocpp_server` (static, only libc/libm/libdl on Linux, no OpenMP, no OpenSSL), the CUDA
-runtime, cuBLAS and cuFFT in `lib/` for the CUDA ones (driver only for users), `model_specs/`, `LICENSE`, `LICENSE-ggml`,
-`NOTICE`. By default only the model families e2a uses are compiled in (`--models e2a`, half the build);
-`--models full` builds every family.
+What every package has: `audiocpp_server` (static, only libc/libm/libdl on Linux, system DLLs on Windows, no OpenMP,
+no OpenSSL), the CUDA runtime, cuBLAS and cuFFT in `lib/` for the CUDA ones (driver only for users), `model_specs/`,
+`LICENSE`, `LICENSE-ggml`, `NOTICE`. By default only the model families e2a uses are compiled in (`--models e2a`, half
+the build); `--models full` builds every family.
 
 ## Build and publish
 
@@ -35,8 +43,21 @@ runtime, cuBLAS and cuFFT in `lib/` for the CUDA ones (driver only for users), `
 gh release upload audiocpp --clobber audio.cpp/audiocpp-server-*.tar.gz
 ```
 
-`--tag` must match e2a's `audiocpp_version` (lib/conf_models.py). Once a package is uploaded, remove
-`"enabled": False` from its entry in e2a's `audiocpp_packages`; e2a downloads it once per URL.
+On Windows arm64, from any command prompt (it loads the Visual Studio C++ environment itself, and adds clang-cl and the
+Vulkan SDK when missing):
+
+```bat
+build-audiocpp.cmd --list
+build-audiocpp.cmd
+build-audiocpp.cmd --only windows-arm64-cpu-v82
+```
+
+Then upload `audio.cpp\audiocpp-server-windows-arm64-*.zip` the same way.
+
+Both scripts build audio.cpp v0.9.5 by default; `--tag` must match e2a's `audiocpp_version` (lib/conf_models.py). An
+existing source tree is moved to `--tag` (local changes dropped): a tree from an earlier release is not rebuilt as is.
+Once a package is uploaded, remove `"enabled": False` from its entry in e2a's `audiocpp_packages`; e2a downloads it
+once per URL.
 
 Jetson packages use JetPack's own CUDA libraries (nothing bundled).
 
