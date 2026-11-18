@@ -4,7 +4,7 @@ Builds the `zonos3-server` packages that ebook2audiobook (e2a) uses for its zono
 
 The script looks at the machine it runs on and builds every package that machine can make. Each package is packed as `zonos3-server-<target>.tar.gz` (`.zip` for Windows) in the `ZONOS3-Mini` folder. The packages are published in the `zonos3` release of [ROBERT-MCDOWELL/py-pkg](https://github.com/ROBERT-MCDOWELL/py-pkg/releases/tag/zonos3) under these same names, and `lib/conf_models.py` in e2a points to them there.
 
-Two scripts, one per kind of build machine: `build-zonos3.sh` on Linux and macOS, `build-zonos3.cmd` on Windows x64 for the Windows packages (CPU, Vulkan, CUDA 12 and CUDA 13), built natively with clang-cl and MSVC + nvcc. Unlike zonos2, Windows has no zig cross-build from Linux: zonos3-server links a Rust library that cargo builds for the build machine (see below).
+Two scripts, one per kind of build machine: `build-zonos3.sh` on Linux and macOS, `build-zonos3.cmd` on Windows for the Windows packages, built natively with clang-cl and MSVC + nvcc: the x64 ones (CPU, Vulkan, CUDA 12 and CUDA 13) on Windows x64, the arm64 ones (CPU and Vulkan) on Windows arm64. Unlike zonos2, Windows has no zig cross-build from Linux: zonos3-server links a Rust library that cargo builds for the build machine (see below).
 
 ## Quick start
 
@@ -14,7 +14,7 @@ Two scripts, one per kind of build machine: `build-zonos3.sh` on Linux and macOS
 ./build-zonos3.sh --help     # every target and option
 ```
 
-On Windows x64, from any command prompt:
+On Windows x64 or arm64, from any command prompt:
 
 ```bat
 build-zonos3.cmd --list
@@ -22,14 +22,14 @@ build-zonos3.cmd
 build-zonos3.cmd --help
 ```
 
-`build-zonos3.cmd` loads the Visual Studio C++ environment itself and installs what is missing: Rust (rustup, minimal profile, MSVC host), the LunarG Vulkan SDK, and the CUDA 12 and 13 compilers, runtimes and cuBLAS from NVIDIA's redistributable archives (checksums verified, no installer, no driver, side by side under `zonos3-tools`). No GPU is needed for any build. `--install-buildtools` installs Visual Studio 2022 Build Tools with C++ and clang-cl through winget.
+`build-zonos3.cmd` loads the Visual Studio C++ environment of the machine (x64 or ARM64) itself and installs what is missing: Rust (rustup, minimal profile, the machine's MSVC host), the LunarG Vulkan SDK for the machine, and on x64 the CUDA 12 and 13 compilers, runtimes and cuBLAS from NVIDIA's redistributable archives (checksums verified, no installer, no driver, side by side under `zonos3-tools`). No GPU is needed for any build. `--install-buildtools` installs Visual Studio 2022 Build Tools with C++ and clang-cl through winget.
 
 Run without options, the script builds every target that is `ready` and skips the others with their reason. With an explicit `--only`, a target that cannot be built stops the run instead, so a requested build is never skipped silently.
 
 ## What differs from zonos2
 
 - **Source.** zonos3.cpp has no repository or release tags of its own: the script fetches the ZONOS3-Mini repository at a commit (`--commit`, default the one e2a pins), with only the two submodules the server builds from, `servers/ggml/ggml` and `third_party/zyphra-textnorm`. The whole tree is needed, not `servers/ggml` alone: the build embeds `model/src/zonos3/registries/*.json` and `servers/api/openapi.json`. zonos3.cpp's CMake applies `servers/ggml/patches/*.patch` to the ggml worktree itself.
-- **Rust.** Text normalization is the Rust library zyphra-textnorm (pure Rust, std only), which zonos3.cpp's CMake builds with cargo for the build machine and links into zonos3-server; it cannot be turned off. The scripts install Rust with rustup when missing (the Docker targets in their container). On Windows, cargo's library follows each target's C runtime: `+crt-static` for the clang-cl builds (static runtime), Rust's default for the nvcc ones (DLL runtime, bundled).
+- **Rust.** Text normalization is the Rust library zyphra-textnorm (pure Rust, std only), which zonos3.cpp's CMake builds with cargo for the build machine and links into zonos3-server; it cannot be turned off. The scripts install Rust with rustup when missing (the Docker targets in their container). On Windows, cargo's library follows each target's C runtime: `+crt-static` for the clang-cl builds (static runtime), Rust's default for the nvcc ones (DLL runtime, bundled). cargo builds for its own host, so `build-zonos3.cmd` makes sure that host is the machine's (`x86_64-` or `aarch64-pc-windows-msvc`): with a Rust whose default host is another one (an x64 Rust on an arm64 machine), it adds and uses the machine's stable toolchain (`RUSTUP_TOOLCHAIN`).
 - **One source patch.** zonos3.cpp already takes an integrated GPU (Jetson, Intel / AMD iGPUs) when there is no discrete one, so zonos2's patch is gone. But its `float_decimal()` (`src/server/util.cpp`) uses the floating-point `std::to_chars`, which GCC 9's libstdc++ does not have (GCC 11+: the Ubuntu 20.04 images of `jetson5-sm72-sm87`, `linux-aarch64`, `linux-aarch64-v82` and `linux-x64-cuda12` have GCC 9, `no matching function for call to 'to_chars(char [64], char*, float&)'`), and libc++ has from macOS 13.3 only (its code is in the system `libc++.dylib`, while the `macos-*` packages start on macOS 11.0, whatever macOS the build Mac runs: `'to_chars' is unavailable: introduced in macOS 13.3`). On every target, the script replaces it with `snprintf` following `to_chars`' rule: the shorter of the shortest round-trip `%f` and `%e` forms, `%f` on a tie. It gives the same value as `std::to_chars` for every float (checked against libstdc++ on every 97th float bit pattern, subnormals, ±0, NaN, ±inf and 10M random values). The script stops with a message if a new ZONOS3-Mini commit changes that function or adds another `std::to_chars`. `build-zonos3.cmd` needs no patch: MSVC has the floating-point `std::to_chars`.
 - **Nothing beside the binary.** The emotion directions are the `steer.gguf` steering bundle e2a downloads with the weights, and the server's studio UI is not built (it needs npm): a package holds the server and its licenses only.
 - **Apple Silicon.** No Zyphra package exists, so `macos-arm64` (Metal) is built here.
@@ -42,6 +42,7 @@ Run without options, the script builds every target that is `ready` and skips th
 | Linux x86_64 | zig (installed with pip) | x64 CPU and Vulkan |
 | Linux x86_64 | Docker, NVIDIA's CUDA images | x64 CUDA 12 and CUDA 13, runtime bundled |
 | Windows x64 | `build-zonos3.cmd`: clang-cl, MSVC + nvcc | Windows CPU, Vulkan, CUDA 12 and CUDA 13, runtime bundled |
+| Windows arm64 (Snapdragon) | `build-zonos3.cmd`: clang-cl | Windows arm64 CPU and Vulkan |
 | Intel Mac | native clang | macOS Intel CPU, Vulkan through MoltenVK |
 | Apple Silicon Mac | native clang | macOS Metal |
 
@@ -88,6 +89,16 @@ zig compiles against an old glibc (2.28) from a modern system and links its C++ 
 | `windows-x64-cuda12` | CUDA 12, driver 525+ | MSVC + nvcc, CUDA runtime, cuBLAS and VC++ runtime next to the exe |
 | `windows-x64-cuda13` | CUDA 13, driver 580+ | same |
 
+### On Windows arm64, `build-zonos3.cmd`
+
+Built with Visual Studio's ARM64 clang-cl (`VC\Tools\Llvm\ARM64`): ggml takes no MSVC for its ARM code. No CUDA target yet: NVIDIA's Windows arm64 CUDA starts at 13.4.1, and ggml's clang-cl would have to be mixed with MSVC's `cl`, the only host compiler nvcc takes.
+
+| Target | For | Notes |
+|---|---|---|
+| `windows-arm64-cpu` | CPU, ARMv8.0 | clang-cl, static C runtime: system DLLs only |
+| `windows-arm64-cpu-v82` | CPU, ARMv8.2 + dotprod + fp16 (Snapdragon 850 and newer: 7c, 8cx, X) | same |
+| `windows-arm64-vulkan` | GPU via Vulkan (Adreno), CPU part ARMv8.0 | the GPU driver brings `vulkan-1.dll` (Snapdragon X); older Snapdragons need Microsoft's OpenCL, OpenGL, and Vulkan Compatibility Pack |
+
 ### On a Mac
 
 | Target | For | Notes |
@@ -124,7 +135,7 @@ Each option also works as the environment variable in brackets.
 | `linux-x64-vulkan` | Vulkan headers, SPIR-V headers, `glslc`, `libvulkan.so`, and more than 4 GB of RAM |
 | `macos-*` | macOS 11 or newer, Xcode Command Line Tools: `xcode-select --install` |
 | `macos-x86_64-vulkan` | the LunarG Vulkan SDK for macOS (`~/VulkanSDK/<version>/macOS` or `VULKAN_SDK=<sdk>/macOS`) |
-| Windows | Visual Studio 2022 C++ build tools (the rest is installed by `build-zonos3.cmd`) |
+| Windows | Visual Studio 2022 C++ build tools for the machine: x64, or ARM64 on arm64 (the rest is installed by `build-zonos3.cmd`) |
 
 Installing the Vulkan build tools on Linux:
 
@@ -194,6 +205,7 @@ zonos3.cpp refuses GGUFs of another schema, and Zyphra updates the weights of `Z
 | `Could NOT find CARGO` at configure | Rust is missing and could not be installed: install it from https://rustup.rs and run again. |
 | `Failed to apply ggml patch ...` | The ggml worktree has other changes: `git -C ZONOS3-Mini/servers/ggml/ggml checkout -- . && git -C ZONOS3-Mini/servers/ggml/ggml clean -fd`, then run again. |
 | Windows `LNK2038: mismatch detected for 'RuntimeLibrary'` | zyphra-textnorm was built for the other C runtime: delete `build-<target>\textnorm` and run again (the script sets `RUSTFLAGS` per target). |
+| Windows arm64 `LNK1112: module machine type 'x64' conflicts with target machine type 'ARM64'` | Something built for x64 got in, most likely an x64 Vulkan SDK found through `VULKAN_SDK` or in `C:\VulkanSDK`: install LunarG's Windows ARM64 SDK and point `VULKAN_SDK` at it, delete `build-<target>` and run again. clang-cl and Rust are checked for the machine's architecture by the script. |
 | `linux-x64-vulkan ... missing: ...` | Install the Vulkan build tools (see above). |
 | A compile process is killed during the Vulkan build | One generated shader file is about 200 MB. Use `--jobs 1`, more RAM, or swap. |
 | A Docker target fails before compiling | Check the Docker output above the error: the image has to be pullable from `nvcr.io` or Docker Hub. |

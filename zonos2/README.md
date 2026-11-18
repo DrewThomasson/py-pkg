@@ -4,7 +4,7 @@ Builds the `zonos2-server` packages that ebook2audiobook (e2a) uses for its zono
 
 The script looks at the machine it runs on and builds every package that machine can make. Each package is packed as `zonos2-server-<target>.tar.gz` (`.zip` for Windows) in the `zonos2.cpp` folder. The packages are published in the `zonos2` release of [ROBERT-MCDOWELL/py-pkg](https://github.com/ROBERT-MCDOWELL/py-pkg/releases/tag/zonos2) under these same names, and `lib/conf_models.py` in e2a points to them there.
 
-Two scripts, one per kind of build machine: `build-zonos2.sh` on Linux and macOS, `build-zonos2.cmd` on Windows x64 for the Windows packages (CPU, Vulkan, CUDA 12 and CUDA 13), built natively with clang-cl and MSVC + nvcc. The Windows CPU targets of `build-zonos2.sh` (zig cross-builds) stay until the `.cmd` builds are published.
+Two scripts, one per kind of build machine: `build-zonos2.sh` on Linux and macOS, `build-zonos2.cmd` on Windows for the Windows packages, built natively with clang-cl and MSVC + nvcc: the x64 ones (CPU, Vulkan, CUDA 12 and CUDA 13) on Windows x64, the arm64 ones (CPU and Vulkan) on Windows arm64. The Windows CPU targets of `build-zonos2.sh` (zig cross-builds) stay until the `.cmd` builds are published.
 
 ## Quick start
 
@@ -14,7 +14,7 @@ Two scripts, one per kind of build machine: `build-zonos2.sh` on Linux and macOS
 ./build-zonos2.sh --help     # every target and option
 ```
 
-On Windows x64, from any command prompt:
+On Windows x64 or arm64, from any command prompt:
 
 ```bat
 build-zonos2.cmd --list
@@ -22,7 +22,7 @@ build-zonos2.cmd
 build-zonos2.cmd --help
 ```
 
-`build-zonos2.cmd` loads the Visual Studio C++ environment itself and installs what is missing: the LunarG Vulkan SDK, and the CUDA 12 and 13 compilers, runtimes and cuBLAS from NVIDIA's redistributable archives (checksums verified, no installer, no driver, side by side under `zonos2-tools`). No GPU is needed for any build. `--install-buildtools` installs Visual Studio 2022 Build Tools with C++ and clang-cl through winget.
+`build-zonos2.cmd` loads the Visual Studio C++ environment of the machine (x64 or ARM64) itself and installs what is missing: the LunarG Vulkan SDK for the machine, and on x64 the CUDA 12 and 13 compilers, runtimes and cuBLAS from NVIDIA's redistributable archives (checksums verified, no installer, no driver, side by side under `zonos2-tools`). No GPU is needed for any build. `--install-buildtools` installs Visual Studio 2022 Build Tools with C++ and clang-cl through winget.
 
 `--list` shows each target of this machine and whether it can be built right now. On an x86_64 Linux machine with all tools installed:
 
@@ -47,6 +47,7 @@ Run without options, the script builds every target that is `ready` and skips th
 | Linux x86_64 | zig (installed with pip) | x64 CPU and Vulkan, Windows CPU |
 | Linux x86_64 | Docker, NVIDIA's CUDA images | x64 CUDA 12 and CUDA 13, runtime bundled |
 | Windows x64 | `build-zonos2.cmd`: clang-cl, MSVC + nvcc | Windows CPU, Vulkan, CUDA 12 and CUDA 13, runtime bundled |
+| Windows arm64 (Snapdragon) | `build-zonos2.cmd`: clang-cl | Windows arm64 CPU and Vulkan |
 | Intel Mac | native clang | macOS Intel CPU |
 
 Apple Silicon has nothing to build: e2a uses Zyphra's own `macos-arm64-metal` package there. Other CPU types (32-bit ARM, RISC-V, PowerPC) are not supported.
@@ -78,6 +79,16 @@ zig compiles against an old glibc (2.28) from a modern system, or for Windows, a
 | `windows-x64-cpu-sse42` | same, SSE4.2 | same |
 
 Windows GPU users get Zyphra's own `windows-x64-vulkan` build.
+
+### On Windows arm64, `build-zonos2.cmd`
+
+Built with Visual Studio's ARM64 clang-cl (`VC\Tools\Llvm\ARM64`): ggml takes no MSVC for its ARM code. No CUDA target yet: NVIDIA's Windows arm64 CUDA starts at 13.4.1, and ggml's clang-cl would have to be mixed with MSVC's `cl`, the only host compiler nvcc takes.
+
+| Target | For | Needs on the user's machine |
+|---|---|---|
+| `windows-arm64-cpu` | CPU, ARMv8.0 | system DLLs only (static C runtime) |
+| `windows-arm64-cpu-v82` | CPU, ARMv8.2 + dotprod + fp16 (Snapdragon 850 and newer: 7c, 8cx, X) | same |
+| `windows-arm64-vulkan` | GPU via Vulkan (Adreno), CPU part ARMv8.0 | the GPU driver, which brings `vulkan-1.dll` (Snapdragon X); older Snapdragons need Microsoft's OpenCL, OpenGL, and Vulkan Compatibility Pack |
 
 ### On an Intel Mac
 
@@ -167,6 +178,7 @@ No change in e2a is needed, unless the package is new to `lib/conf_models.py` or
 The script applies these to the sources and build settings itself:
 
 - **Integrated GPUs.** zonos2.cpp v0.5.2 only looks for a discrete GPU, but ggml reports every Jetson and integrated Intel/AMD GPUs as "integrated", so they ran on CPU. The script patches `src/zonos2.cpp` and `src/dac.cpp` to also take an integrated GPU, once per source tree.
+- **ARM NEON under clang-cl.** The ggml of v0.5.2 builds `ggml_vld1q_u32` the MSVC way whenever `_MSC_VER` is defined, clang-cl included, which fills the vector wrongly (`{a, c, 0, 0}` instead of `{a, b, c, d}`, no warning) in the IQ3_XXS, IQ3_S and IQ1_M kernels of the Windows arm64 builds. `build-zonos2.cmd` applies ggml's later fix (the MSVC form for MSVC proper only) to `ggml/src/ggml-cpu/ggml-cpu-impl.h`, once per source tree; x64 builds are unaffected, the macro is ARM only.
 - **No NCCL.** NCCL (multi-GPU only) is not part of a JetPack install; CUDA builds leave it out (`-DGGML_CUDA_NCCL=OFF`).
 - **Portable CPU code.** Every build uses a fixed CPU target (`GGML_NATIVE=OFF`) instead of the build machine's CPU. The x86 instruction levels are set explicitly, because ggml turns them all off when cross-compiling for Windows.
 - **Portable libraries.** The CPU and Vulkan builds have no OpenMP and link their C++ library in, so they only need `libc`/`libm`. The Jetson builds keep JetPack's own.

@@ -1,7 +1,8 @@
 @echo off
-rem build-zonos3.cmd - the e2a zonos3-server packages for Windows x64 (zonos3.cpp, servers/ggml of Zyphra's
-rem ZONOS3-Mini), built natively: windows-x64-cpu-avx2 / -cpu-sse42 / -vulkan with clang-cl, windows-x64-cuda12 /
-rem -cuda13 with MSVC + nvcc, each with zyphra-textnorm (Rust, cargo for the MSVC host) linked in.
+rem build-zonos3.cmd - the e2a zonos3-server packages for Windows x64 and arm64 (zonos3.cpp, servers/ggml of Zyphra's
+rem ZONOS3-Mini), built natively on each: windows-x64-cpu-avx2 / -cpu-sse42 / -vulkan and windows-arm64-cpu / -cpu-v82 /
+rem -vulkan with clang-cl, windows-x64-cuda12 / -cuda13 with MSVC + nvcc, each with zyphra-textnorm (Rust, cargo for the
+rem MSVC host) linked in.
 rem Each lands as zonos3-server-<target>.zip in the ZONOS3-Mini folder, named like e2a downloads it from the zonos3
 rem release of py-pkg. Runs from any command prompt: it loads the Visual Studio C++ environment itself (vswhere +
 rem vcvarsall). Linux and macOS: build-zonos3.sh. build-zonos3.cmd --help for the options, --list for this machine.
@@ -50,9 +51,25 @@ shift
 shift
 goto :args
 :args_done
+rem each machine builds its own packages, natively: x64 the CPU, Vulkan and CUDA ones, arm64 the CPU and Vulkan ones
+rem (ggml's ARM code takes clang-cl only, while nvcc takes only MSVC's cl as host compiler)
 set "HA=%PROCESSOR_ARCHITECTURE%"
 if defined PROCESSOR_ARCHITEW6432 set "HA=%PROCESSOR_ARCHITEW6432%"
-if /i not "%HA%"=="AMD64" (echo build-zonos3.cmd builds the Windows x64 packages on a Windows x64 machine, this one is %HA% & exit /b 1)
+set "HOSTA="
+if /i "%HA%"=="AMD64" set "HOSTA=x64"
+if /i "%HA%"=="ARM64" set "HOSTA=arm64"
+if not defined HOSTA (echo build-zonos3.cmd builds the Windows packages on a Windows x64 or arm64 machine, this one is %HA% & exit /b 1)
+rem this machine's triple (clang-cl's target, the Rust host, uv's wheels), its MSVC component and clang-cl folder in
+rem Visual Studio, and its LunarG Vulkan SDK platform
+set "TRIPLE=x86_64-pc-windows-msvc"
+set "VSTOOLS=Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+set "LLVMDIR=x64"
+set "VKPLAT=windows"
+if "%HOSTA%"=="arm64" set "ALL=windows-arm64-cpu windows-arm64-cpu-v82 windows-arm64-vulkan"
+if "%HOSTA%"=="arm64" set "TRIPLE=aarch64-pc-windows-msvc"
+if "%HOSTA%"=="arm64" set "VSTOOLS=Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+if "%HOSTA%"=="arm64" set "LLVMDIR=ARM64"
+if "%HOSTA%"=="arm64" set "VKPLAT=warm"
 for %%r in ("%SRC%") do set "SRC=%%~fr"
 for %%r in ("%TOOLS%") do set "TOOLS=%%~fr"
 call :vs_env
@@ -61,10 +78,10 @@ call :llvm_path
 if "%LIST%"=="1" goto :list
 goto :build
 :usage
-echo build-zonos3.cmd - the e2a zonos3-server packages for Windows x64, built natively on Windows x64.
-echo Each target is packed as zonos3-server-^<target^>.zip in the ZONOS3-Mini folder.
+echo build-zonos3.cmd - the e2a zonos3-server packages for Windows, built natively: the x64 ones on Windows x64, the
+echo arm64 ones on Windows arm64. Each target is packed as zonos3-server-^<target^>.zip in the ZONOS3-Mini folder.
 echo.
-echo Targets
+echo Targets on Windows x64
 echo   windows-x64-cpu-avx2   CPU, AVX2/FMA/F16C, clang-cl, static C runtime: system DLLs only, Windows 10+
 echo   windows-x64-cpu-sse42  same, SSE4.2, for CPUs without AVX2
 echo   windows-x64-vulkan     GPU via Vulkan (NVIDIA, AMD, Intel), CPU part SSE4.2, clang-cl, the LunarG SDK's glslc
@@ -72,6 +89,12 @@ echo                          and vulkan-1.lib; users need only their GPU driver
 echo   windows-x64-cuda12     GPU via CUDA 12 (Maxwell to Blackwell, driver 525+), CPU part SSE4.2, MSVC + nvcc;
 echo                          CUDA runtime, cuBLAS and the VC++ runtime bundled next to the exe: driver only for users
 echo   windows-x64-cuda13     GPU via CUDA 13 (Turing to Blackwell, driver 580+), same
+echo Targets on Windows arm64
+echo   windows-arm64-cpu      CPU, ARMv8.0, clang-cl, static C runtime: system DLLs only, Windows 10+
+echo   windows-arm64-cpu-v82  same, ARMv8.2 + dotprod + fp16 (Snapdragon 850 and newer: 7c, 8cx, X)
+echo   windows-arm64-vulkan   GPU via Vulkan (Qualcomm Adreno), CPU part ARMv8.0, clang-cl, the LunarG arm64 SDK's
+echo                          glslc and vulkan-1.lib; users need only their GPU driver (Snapdragon X), or on older
+echo                          Snapdragons Microsoft's OpenCL, OpenGL, and Vulkan Compatibility Pack
 echo No GPU is needed to build any of them.
 echo.
 echo Options                     [environment variable]   default
@@ -89,18 +112,20 @@ echo   --install-buildtools      no Visual Studio yet: install the 2022 Build To
 echo   NVCC_ALLOW_UNSUPPORTED=1  let nvcc accept a Visual Studio newer than its CUDA release supports
 echo.
 echo Needs
-echo   every target: git, curl and PowerShell (both part of Windows 10+), Visual Studio 2022 C++ build tools
+echo   every target: git, curl and PowerShell (both part of Windows 10+), Visual Studio 2022 C++ build tools for
+echo     this machine: x64, or ARM64 on arm64
 echo   every target: Rust (cargo) for zyphra-textnorm, installed by this script when missing: rustup's minimal
-echo     profile for the x86_64-pc-windows-msvc host, in %%USERPROFILE%%\.cargo
+echo     profile for this machine's host (x86_64- or aarch64-pc-windows-msvc), in %%USERPROFILE%%\.cargo; a Rust
+echo     whose default host is another one gets this machine's stable toolchain added
 echo   cpu and vulkan: the "C++ Clang tools for Windows" component of Visual Studio, added by this script when
 echo     missing through the Visual Studio Installer - one UAC prompt
-echo   vulkan: the LunarG Vulkan SDK, installed by this script when missing
+echo   vulkan: the LunarG Vulkan SDK for this machine (x64 or arm64), installed by this script when missing
 echo   cuda12 / cuda13: the CUDA compiler, runtime and cuBLAS, downloaded by this script into --tools from NVIDIA's
 echo     redistributable archives - checksums verified, no installer, no driver, no admin rights, about 3 GB each
 echo   cmake and ninja come from a venv this script makes with uv, installed when missing
 exit /b 0
 :list
-echo targets on this Windows x64 machine:
+echo targets on this Windows %HOSTA% machine:
 for %%t in (%ALL%) do call :list_one %%t
 exit /b 0
 :list_one
@@ -114,8 +139,9 @@ exit /b 0
 :install_note
 set "INOTE="
 if defined MISS exit /b 0
-if /i not "%~1"=="windows-x64-cuda12" if /i not "%~1"=="windows-x64-cuda13" where clang-cl >nul 2>&1 || set "INOTE= - adds clang-cl to Visual Studio first"
+if /i not "%~1"=="windows-x64-cuda12" if /i not "%~1"=="windows-x64-cuda13" call :clang_ok || set "INOTE= - adds clang-cl to Visual Studio first"
 if /i "%~1"=="windows-x64-vulkan" if not exist "%VULKAN_SDK%\Bin\glslc.exe" set "INOTE=%INOTE% - installs the Vulkan SDK first"
+if /i "%~1"=="windows-arm64-vulkan" if not exist "%VULKAN_SDK%\Bin\glslc.exe" set "INOTE=%INOTE% - installs the Vulkan SDK first"
 if /i "%~1"=="windows-x64-cuda12" if not exist "%TOOLS%\cuda-%CUDA12%\bin\nvcc.exe" set "INOTE= - downloads CUDA %CUDA12% first"
 if /i "%~1"=="windows-x64-cuda13" if not exist "%TOOLS%\cuda-%CUDA13%\bin\nvcc.exe" set "INOTE= - downloads CUDA %CUDA13% first"
 call :find_cargo || set "INOTE=%INOTE% - installs Rust first"
@@ -125,12 +151,13 @@ rem sets MISS to what target %1 lacks on this machine, each item comma-terminate
 set "MISS="
 where git >nul 2>&1 || set "MISS=%MISS% git,"
 where curl >nul 2>&1 || set "MISS=%MISS% curl,"
-where cl >nul 2>&1 || set "MISS=%MISS% Visual Studio C++ build tools,"
+where cl >nul 2>&1 || set "MISS=%MISS% Visual Studio C++ build tools for %HOSTA%,"
+if defined VSCMD_ARG_TGT_ARCH if /i not "%VSCMD_ARG_TGT_ARCH%"=="%HOSTA%" set "MISS=%MISS% a %HOSTA% Visual Studio environment - this one targets %VSCMD_ARG_TGT_ARCH%,"
 if "%INSTALL%"=="0" call :find_cargo || set "MISS=%MISS% Rust (cargo),"
 if /i "%~1"=="windows-x64-cuda12" goto :miss_cuda12
 if /i "%~1"=="windows-x64-cuda13" goto :miss_cuda13
-where clang-cl >nul 2>&1 || call :can_add_clang || set "MISS=%MISS% clang-cl - C++ Clang tools for Windows,"
-if /i not "%~1"=="windows-x64-vulkan" exit /b 0
+call :clang_ok || call :can_add_clang || set "MISS=%MISS% clang-cl for %HOSTA% - C++ Clang tools for Windows,"
+if /i not "%~1"=="windows-x64-vulkan" if /i not "%~1"=="windows-arm64-vulkan" exit /b 0
 if "%INSTALL%"=="1" exit /b 0
 if not exist "%VULKAN_SDK%\Bin\glslc.exe" set "MISS=%MISS% LunarG Vulkan SDK,"
 exit /b 0
@@ -157,7 +184,7 @@ exit /b 0
 :check_target
 set "KNOWN=0"
 for %%a in (%ALL%) do if /i "%%a"=="%~1" set "KNOWN=1"
-if "%KNOWN%"=="0" (echo [zonos3] ERROR: unknown target %~1 - see --list & exit /b 1)
+if "%KNOWN%"=="0" (echo [zonos3] ERROR: %~1 is not a target of this Windows %HOSTA% machine - see --list & exit /b 1)
 call :missing %1
 if defined MISS goto :ct_missing
 exit /b 0
@@ -172,8 +199,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/insta
 set "PATH=%USERPROFILE%\.local\bin;%PATH%"
 :have_uv
 if not exist "%TOOLS%\zbuild\Scripts\python.exe" uv venv -q "%TOOLS%\zbuild" || exit /b 1
-uv pip install -q --python "%TOOLS%\zbuild\Scripts\python.exe" cmake ninja || exit /b 1
-set "PATH=%TOOLS%\zbuild\Scripts;%PATH%"
+rem this machine's cmake and ninja whatever the venv's Python is, and cmake's own binary ahead of its Python launcher:
+rem on arm64 the venv may get an x64 Python, whose emulated cmake would see an AMD64 machine and set ggml up for x86
+uv pip install -q --python "%TOOLS%\zbuild\Scripts\python.exe" --python-platform %TRIPLE% cmake ninja || exit /b 1
+set "PATH=%TOOLS%\zbuild\Lib\site-packages\cmake\data\bin;%TOOLS%\zbuild\Scripts;%PATH%"
 exit /b 0
 :source
 rem ZONOS3-Mini at COMMIT (no release tags: fetched by commit), with the two submodules zonos3.cpp builds from: ggml
@@ -201,9 +230,10 @@ set "B=%SRC%\build-%T%"
 set "D=%SRC%\zonos3-server-%T%"
 set "CV="
 echo === %T%
-rem CPU and Vulkan: clang-cl, whose ggml CPU code is faster than MSVC's, with the static C runtime, so the zip needs
-rem only system DLLs. CUDA: nvcc takes only MSVC's cl.exe as host compiler, with the DLL runtime, which is bundled.
-rem The GPU builds keep their CPU part at SSE4.2: the GPU runs the model, and older CPUs stay in.
+rem CPU and Vulkan: clang-cl, whose ggml CPU code is faster than MSVC's (and the only compiler ggml takes for ARM),
+rem with the static C runtime, so the zip needs only system DLLs. CUDA: nvcc takes only MSVC's cl.exe as host compiler,
+rem with the DLL runtime, which is bundled. The GPU builds keep their CPU part at SSE4.2 on x64, ARMv8.0 on arm64: the
+rem GPU runs the model, and older CPUs stay in.
 rem zyphra-textnorm follows each one's C runtime: +crt-static with clang-cl's static one (libcmt), Rust's default (the
 rem DLL runtime) with nvcc's
 set "CARGO_BUILD_JOBS=%JOBS%"
@@ -212,16 +242,21 @@ set "COMMON=-G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_N
 set "STATIC=-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
 set "SSE42=-DGGML_SSE42=ON -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF"
 set "AVX2=-DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
+set "ARMV80=-DGGML_CPU_ARM_ARCH=armv8-a"
+set "ARMV82=-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16"
 set "CLANG=-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl %STATIC%"
 if /i "%T%"=="windows-x64-cpu-avx2" set "FLAGS=%CLANG% %AVX2%"
 if /i "%T%"=="windows-x64-cpu-sse42" set "FLAGS=%CLANG% %SSE42%"
-if /i "%T%"=="windows-x64-vulkan" goto :bo_vulkan
+if /i "%T%"=="windows-arm64-cpu" set "FLAGS=%CLANG% %ARMV80%"
+if /i "%T%"=="windows-arm64-cpu-v82" set "FLAGS=%CLANG% %ARMV82%"
+if /i "%T%"=="windows-x64-vulkan" (set "CPUF=%SSE42%" & goto :bo_vulkan)
+if /i "%T%"=="windows-arm64-vulkan" (set "CPUF=%ARMV80%" & goto :bo_vulkan)
 if /i "%T%"=="windows-x64-cuda12" (set "CV=%CUDA12%" & set "CA=%ARCHS12%" & goto :bo_cuda)
 if /i "%T%"=="windows-x64-cuda13" (set "CV=%CUDA13%" & set "CA=%ARCHS13%" & goto :bo_cuda)
 goto :bo_cmake
 :bo_vulkan
 call :ensure_sdk || exit /b 1
-set "FLAGS=%CLANG% %SSE42% -DGGML_VULKAN=ON"
+set "FLAGS=%CLANG% %CPUF% -DGGML_VULKAN=ON"
 goto :bo_cmake
 :bo_cuda
 call :ensure_cuda %CV% || exit /b 1
@@ -303,19 +338,33 @@ set "PATH=%CARGO_HOME%\bin;%PATH%"
 exit /b 0
 :ensure_rust
 rem Rust for zyphra-textnorm, which zonos3.cpp's CMake builds with cargo for the host (pure Rust, std only): rustup's
-rem minimal profile for the MSVC host when missing, no PATH change outside this run
-call :find_cargo && exit /b 0
+rem minimal profile for this machine's MSVC host when missing, no PATH change outside this run
+call :find_cargo && goto :er_host
 if not "%INSTALL%"=="1" goto :er_none
 set "RUSTUP=%TEMP%\rustup-init-%RANDOM%.exe"
-echo [zonos3] installing Rust (rustup, minimal profile, x86_64-pc-windows-msvc) into %USERPROFILE%\.cargo
-curl.exe -fsSL -o "%RUSTUP%" https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe || exit /b 1
-"%RUSTUP%" -y --profile minimal --default-host x86_64-pc-windows-msvc --default-toolchain stable --no-modify-path || exit /b 1
+echo [zonos3] installing Rust (rustup, minimal profile, %TRIPLE%) into %USERPROFILE%\.cargo
+curl.exe -fsSL -o "%RUSTUP%" https://static.rust-lang.org/rustup/dist/%TRIPLE%/rustup-init.exe || exit /b 1
+"%RUSTUP%" -y --profile minimal --default-host %TRIPLE% --default-toolchain stable --no-modify-path || exit /b 1
 del /q "%RUSTUP%" 2>nul
 call :find_cargo && exit /b 0
 echo [zonos3] ERROR: cargo is still missing after the Rust install
 exit /b 1
 :er_none
 echo [zonos3] ERROR: no Rust (cargo) - install it from https://rustup.rs, or drop --no-install
+exit /b 1
+:er_host
+rem cargo builds for its own host (no --target), so a Rust whose default host is another one - an x64 Rust on an arm64
+rem machine, a GNU one - gives a library the link refuses: run this machine's stable MSVC toolchain instead
+rustc -vV 2>nul | findstr /b /c:"host: %TRIPLE%" >nul && exit /b 0
+set "RUSTUP_TOOLCHAIN=stable-%TRIPLE%"
+rustc -vV 2>nul | findstr /b /c:"host: %TRIPLE%" >nul && exit /b 0
+where rustup >nul 2>&1 || goto :er_nohost
+if not "%INSTALL%"=="1" goto :er_nohost
+echo [zonos3] adding the Rust toolchain %RUSTUP_TOOLCHAIN% (minimal profile): the default one builds for another host
+rustup toolchain install %RUSTUP_TOOLCHAIN% --profile minimal --no-self-update || exit /b 1
+exit /b 0
+:er_nohost
+echo [zonos3] ERROR: this Rust builds for another host than %TRIPLE% - rustup toolchain install stable-%TRIPLE%, or drop --no-install
 exit /b 1
 :ensure_sdk
 call :find_sdk
@@ -336,12 +385,13 @@ for /f "delims=" %%d in ('dir /b /ad /o-n "C:\VulkanSDK" 2^>nul') do if not defi
 exit /b 0
 :install_sdk
 set "VKVER="
-for /f "usebackq delims=" %%v in (`curl.exe -fsSL https://vulkan.lunarg.com/sdk/latest/windows.txt`) do set "VKVER=%%v"
+rem the SDK of this machine's architecture: LunarG's "windows" platform is x64, "warm" is arm64
+for /f "usebackq delims=" %%v in (`curl.exe -fsSL https://vulkan.lunarg.com/sdk/latest/%VKPLAT%.txt`) do set "VKVER=%%v"
 if not defined VKVER (echo [zonos3] ERROR: cannot reach vulkan.lunarg.com & exit /b 1)
-set "VKEXE=%TEMP%\vulkan_sdk_%VKVER%.exe"
-echo [zonos3] installing the LunarG Vulkan SDK %VKVER% into %LOCALAPPDATA%\VulkanSDK\%VKVER%
-curl.exe -fL -o "%VKEXE%" https://sdk.lunarg.com/sdk/download/%VKVER%/windows/vulkan_sdk.exe || exit /b 1
-call :check_sha "%VKEXE%" https://sdk.lunarg.com/sdk/sha/%VKVER%/windows/vulkan_sdk.exe.txt || exit /b 1
+set "VKEXE=%TEMP%\vulkan_sdk_%VKPLAT%_%VKVER%.exe"
+echo [zonos3] installing the LunarG Vulkan SDK %VKVER% for %HOSTA% into %LOCALAPPDATA%\VulkanSDK\%VKVER%
+curl.exe -fL -o "%VKEXE%" https://sdk.lunarg.com/sdk/download/%VKVER%/%VKPLAT%/vulkan_sdk.exe || exit /b 1
+call :check_sha "%VKEXE%" https://sdk.lunarg.com/sdk/sha/%VKVER%/%VKPLAT%/vulkan_sdk.exe.txt || exit /b 1
 "%VKEXE%" --root "%LOCALAPPDATA%\VulkanSDK\%VKVER%" --accept-licenses --default-answer --confirm-command install copy_only=1 || exit /b 1
 del /q "%VKEXE%" 2>nul
 set "VULKAN_SDK=%LOCALAPPDATA%\VulkanSDK\%VKVER%"
@@ -377,13 +427,18 @@ exit /b 1
 echo [zonos3] ERROR: CUDA %~1 has no bin\nvcc.exe after the download - check that release on developer.download.nvidia.com/compute/cuda/redist
 exit /b 1
 :llvm_path
-rem vcvarsall does not put Visual Studio's clang-cl on PATH
-where clang-cl >nul 2>&1 && exit /b 0
-if defined VCINSTALLDIR if exist "%VCINSTALLDIR%Tools\Llvm\x64\bin\clang-cl.exe" set "PATH=%VCINSTALLDIR%Tools\Llvm\x64\bin;%PATH%"
+rem vcvarsall does not put Visual Studio's clang-cl on PATH: put the one of this machine (Llvm\x64 or Llvm\ARM64) first,
+rem unless PATH has a clang-cl compiling for this machine already (an x64 one on arm64 would build x64 code)
+call :clang_ok && exit /b 0
+if defined VCINSTALLDIR if exist "%VCINSTALLDIR%Tools\Llvm\%LLVMDIR%\bin\clang-cl.exe" set "PATH=%VCINSTALLDIR%Tools\Llvm\%LLVMDIR%\bin;%PATH%"
 exit /b 0
+:clang_ok
+rem the clang-cl on PATH compiles for this machine by default
+clang-cl --version 2>nul | findstr /b /c:"Target: %TRIPLE%" >nul
+exit /b %ERRORLEVEL%
 :vs_env
-rem already in a Visual Studio x64 environment: keep it
-if /i not "%VSCMD_ARG_TGT_ARCH%"=="x64" goto :vs_find
+rem already in a Visual Studio environment for this machine: keep it
+if /i not "%VSCMD_ARG_TGT_ARCH%"=="%HOSTA%" goto :vs_find
 where cl >nul 2>&1 && exit /b 0
 :vs_find
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -391,13 +446,13 @@ if not exist "%VSWHERE%" exit /b 0
 rem run vswhere outside any ( ) block: its path holds "(x86)", whose ")" would end a for /f clause early
 set "VSPATH="
 set "VSOUT=%TEMP%\zonos3_vspath_%RANDOM%.txt"
-"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath > "%VSOUT%" 2>nul
+"%VSWHERE%" -latest -products * -requires %VSTOOLS% -property installationPath > "%VSOUT%" 2>nul
 set /p VSPATH=<"%VSOUT%"
 del /q "%VSOUT%" 2>nul
 if not defined VSPATH exit /b 0
 if not exist "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" exit /b 0
-echo [zonos3] loading the Visual Studio C++ environment from %VSPATH%
-call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul
+echo [zonos3] loading the Visual Studio C++ environment for %HOSTA% from %VSPATH%
+call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" %HOSTA% >nul
 exit /b 0
 :can_add_clang
 rem clang-cl can be added: installing is allowed and this Visual Studio has its installer
@@ -409,7 +464,7 @@ exit /b 0
 :ensure_clang
 rem the CPU and Vulkan targets need clang-cl: add the C++ Clang tools to the Visual Studio found here, with its own
 rem installer (it asks for admin rights through UAC), then pick clang-cl up from that Visual Studio
-where clang-cl >nul 2>&1 && exit /b 0
+call :clang_ok && exit /b 0
 call :can_add_clang || exit /b 0
 echo [zonos3] adding clang-cl (C++ Clang tools for Windows) to the Visual Studio in %VSPATH% - accept the UAC prompt, then
 echo [zonos3] the Visual Studio Installer works in the background for a few minutes
@@ -419,21 +474,21 @@ rem vs_buildtools bootstrapper does). 0 and 3010 (reboot advised, not needed for
 set "VSCOMPS=--add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
 call :vs_modify
 call :llvm_path
-where clang-cl >nul 2>&1 && exit /b 0
+call :clang_ok && exit /b 0
 rem no ( ) block here: VSPATH holds "(x86)"
-if not exist "%VSPATH%\VC\Tools\Llvm\x64\bin\clang-cl.exe" goto :ec_noclang
-set "PATH=%VSPATH%\VC\Tools\Llvm\x64\bin;%PATH%"
+if not exist "%VSPATH%\VC\Tools\Llvm\%LLVMDIR%\bin\clang-cl.exe" goto :ec_noclang
+set "PATH=%VSPATH%\VC\Tools\Llvm\%LLVMDIR%\bin;%PATH%"
 exit /b 0
 :ec_noclang
-echo [zonos3] ERROR: clang-cl is still missing after the Visual Studio modify - was the UAC prompt declined? Add "C++ Clang Compiler for Windows" in the Visual Studio Installer, or build only the CUDA targets
+echo [zonos3] ERROR: clang-cl for %HOSTA% is still missing after the Visual Studio modify - was the UAC prompt declined? Add "C++ Clang Compiler for Windows" in the Visual Studio Installer (VC\Tools\Llvm\%LLVMDIR%), or on x64 build only the CUDA targets
 exit /b 1
 :vs_modify
 rem adds the components in VSCOMPS to the Visual Studio in VSPATH, elevated (one UAC prompt)
 powershell -NoProfile -c "$q=[char]34;try{$p=Start-Process -FilePath '%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe' -ArgumentList ('modify --installPath '+$q+'%VSPATH%'+$q+' %VSCOMPS% --quiet --norestart') -Verb RunAs -Wait -PassThru}catch{Write-Host '[zonos3] the UAC prompt was declined';exit 1};if($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010){Write-Host ('[zonos3] the Visual Studio Installer exited with '+$p.ExitCode);exit 1};exit 0"
 exit /b 0
 :install_bt
-where cl >nul 2>&1 && where clang-cl >nul 2>&1 && exit /b 0
-set "VSCOMPS=--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
+where cl >nul 2>&1 && call :clang_ok && exit /b 0
+set "VSCOMPS=--add Microsoft.VisualStudio.Workload.VCTools --add %VSTOOLS% --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
 rem a Visual Studio already here (VSPATH, from vs_env): add the missing components to it with its own installer;
 rem winget would only report the Build Tools as already installed
 if not defined VSPATH if defined VSINSTALLDIR set "VSPATH=%VSINSTALLDIR:~0,-1%"
@@ -444,10 +499,10 @@ call :vs_modify
 goto :bt_check
 :bt_winget
 echo [zonos3] installing Visual Studio 2022 Build Tools with C++ and clang-cl - several GB, a UAC prompt may appear
-winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --silent --accept-package-agreements --accept-source-agreements --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --includeRecommended"
+winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --silent --accept-package-agreements --accept-source-agreements --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add %VSTOOLS% --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --includeRecommended"
 :bt_check
 call :vs_env
 call :llvm_path
-where cl >nul 2>&1 && where clang-cl >nul 2>&1 && exit /b 0
+where cl >nul 2>&1 && call :clang_ok && exit /b 0
 echo [zonos3] ERROR: the C++ build tools or clang-cl are still not usable - finish the Visual Studio install, then run this again
 exit /b 1
