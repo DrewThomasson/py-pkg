@@ -353,12 +353,13 @@ exit /b 0
 :ensure_cuda
 rem CUDA %1 from NVIDIA's redistributable archives - redistrib_%1.json lists each component's zip and sha256: the
 rem compiler (nvcc, plus crt and nvvm, separate since CUDA 13), the runtime, the CCCL headers and cuBLAS, merged into
-rem one toolkit folder. No installer, no driver, no admin rights, several CUDA releases side by side
+rem one toolkit folder (CCCL is cuda_cccl up to CUDA 13.2, cccl from 13.3). No installer, no driver, no admin rights,
+rem several CUDA releases side by side
 set "CUDADIR=%TOOLS%\cuda-%~1"
 if exist "%CUDADIR%\bin\nvcc.exe" exit /b 0
 if not "%INSTALL%"=="1" goto :ec_none
 echo [zonos2] downloading the CUDA %~1 compiler, runtime and cuBLAS into %CUDADIR%, about 3 GB
-powershell -NoProfile -ExecutionPolicy Bypass -c "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$v='%~1';$d='%CUDADIR%';$b='https://developer.download.nvidia.com/compute/cuda/redist/';$j=Invoke-RestMethod ($b+'redistrib_'+$v+'.json');New-Item -ItemType Directory -Force $d | Out-Null;foreach($c in @('cuda_nvcc','cuda_crt','libnvvm','cuda_cudart','cuda_cccl','libcublas')){$e=$j.$c.'windows-x86_64';if(-not $e){continue};$z=Join-Path $env:TEMP ([IO.Path]::GetFileName($e.relative_path));Write-Host ('[zonos2]   '+$c+' '+$j.$c.version);Invoke-WebRequest -UseBasicParsing ($b+$e.relative_path) -OutFile $z;if((Get-FileHash -Algorithm SHA256 $z).Hash -ne $e.sha256.ToUpper()){throw ('checksum mismatch: '+$c)};$t=Join-Path $env:TEMP ('zcuda'+[guid]::NewGuid().ToString('N'));Expand-Archive -LiteralPath $z -DestinationPath $t -Force;$r=(Get-ChildItem $t | Select-Object -First 1).FullName;robocopy $r $d /E /NFL /NDL /NJH /NJS /NP | Out-Null;if($LASTEXITCODE -ge 8){throw ('copy failed: '+$c)};Remove-Item $t -Recurse -Force;Remove-Item $z};exit 0" || exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -c "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$v='%~1';$d='%CUDADIR%';$b='https://developer.download.nvidia.com/compute/cuda/redist/';$j=Invoke-RestMethod ($b+'redistrib_'+$v+'.json');New-Item -ItemType Directory -Force $d | Out-Null;foreach($c in @('cuda_nvcc','cuda_crt','libnvvm','cuda_cudart','cuda_cccl','cccl','libcublas')){$e=$j.$c.'windows-x86_64';if(-not $e){continue};$z=Join-Path $env:TEMP ([IO.Path]::GetFileName($e.relative_path));Write-Host ('[zonos2]   '+$c+' '+$j.$c.version);Invoke-WebRequest -UseBasicParsing ($b+$e.relative_path) -OutFile $z;if((Get-FileHash -Algorithm SHA256 $z).Hash -ne $e.sha256.ToUpper()){throw ('checksum mismatch: '+$c)};$t=Join-Path $env:TEMP ('zcuda'+[guid]::NewGuid().ToString('N'));Expand-Archive -LiteralPath $z -DestinationPath $t -Force;$r=(Get-ChildItem $t | Select-Object -First 1).FullName;robocopy $r $d /E /NFL /NDL /NJH /NJS /NP | Out-Null;if($LASTEXITCODE -ge 8){throw ('copy failed: '+$c)};Remove-Item $t -Recurse -Force;Remove-Item $z};exit 0" || exit /b 1
 if not exist "%CUDADIR%\bin\nvcc.exe" goto :ec_nonvcc
 exit /b 0
 :ec_none
